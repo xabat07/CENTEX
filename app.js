@@ -97,6 +97,12 @@ let D;
 try { D = norm(JSON.parse(localStorage.getItem(KEY) || 'null')); } catch (e) { D = blank(); }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(D)); } catch (e) { toast('No he podido guardar en este navegador'); } }
 
+// Reparto de la cartera de un mes: modo 'pct' (valores en %) o 'eur' (valores en €). Opcional.
+function cleanRep(r) {
+  if (!r || typeof r !== 'object' || !Array.isArray(r.items)) return null;
+  const items = r.items.filter(i => i && String(i.n == null ? '' : i.n).trim() && (typeof i.v === 'number' ? i.v : num(i.v)) > 0).slice(0, 40).map(i => ({ n: String(i.n).trim().slice(0, 40), v: typeof i.v === 'number' ? i.v : num(i.v) }));
+  return items.length ? { modo: r.modo === 'eur' ? 'eur' : 'pct', items } : null;
+}
 // Limpia un archivo importado: solo deja lo que tiene el formato correcto.
 function cleanData(o) {
   o = o && typeof o === 'object' ? o : {};
@@ -106,7 +112,7 @@ function cleanData(o) {
   const seg = arr('seg').filter(x => x && s(x.nombre) && s(x.grupo)).map(x => ({ id: s(x.id || uid(), 40), tipo: s(x.tipo, 40).trim() || 'accion', grupo: s(x.grupo, 60), nombre: s(x.nombre, 80), ticker: s(x.ticker, 30), fecha: isDate(x.fecha) ? x.fecha : null, precioEntrada: n(x.precioEntrada), precioActual: n(x.precioActual), motivo: s(x.motivo, 400) }));
   return {
     gastos: arr('gastos').filter(x => x && isDate(x.fecha) && n(x.cant) != null).map(x => ({ id: s(x.id || uid(), 40), fecha: x.fecha, desc: s(x.desc, 80), cat: CATS.includes(x.cat) ? x.cat : 'Otros', cant: n(x.cant), pago: x.pago === 'Efectivo' ? 'Efectivo' : 'Tarjeta' })),
-    cartera: arr('cartera').filter(x => x && isMonth(x.mes)).map(x => ({ mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) })),
+    cartera: arr('cartera').filter(x => x && isMonth(x.mes)).map(x => { const o2 = { mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) }, rp = cleanRep(x.rep); if (rp) o2.rep = rp; return o2; }),
     seg, secciones: ensureSecs(cleanSecs(o.secciones), seg),
     objetivos: arr('objetivos').filter(x => x && s(x.nombre) && n(x.meta) > 0).map(x => ({ id: s(x.id || uid(), 40), nombre: s(x.nombre, 60), meta: n(x.meta), ahorrado: n(x.ahorrado) || 0, fecha: isDate(x.fecha) ? x.fecha : null }))
   };
@@ -126,8 +132,17 @@ function carteraRows() {
   return D.cartera.slice().sort((a, b) => (a.mes < b.mes ? -1 : 1)).map(r => {
     acum += r.aportado || 0;
     const valor = r.valor == null ? null : r.valor, gan = valor == null ? null : valor - acum;
-    return { mes: r.mes, ap: r.aportado || 0, acum, valor, gan, rent: valor == null || acum <= 0 ? null : (gan / acum) * 100 };
+    return { mes: r.mes, ap: r.aportado || 0, acum, valor, gan, rent: valor == null || acum <= 0 ? null : (gan / acum) * 100, rep: r.rep || null };
   });
+}
+// Reparto de un mes en € y en %, sea cual sea el modo en que se apuntó. Lo no apuntado sale como «Sin asignar».
+function repartoDe(r) {
+  if (!r || !r.rep || !Array.isArray(r.rep.items) || !r.rep.items.length || !(r.valor > 0)) return null;
+  const eurMode = r.rep.modo === 'eur';
+  const items = r.rep.items.map(i => { const imp = eurMode ? i.v : (i.v * r.valor) / 100; return { n: i.n, imp, pct: (imp / r.valor) * 100 }; });
+  const resto = r.valor - items.reduce((a, b) => a + b.imp, 0);
+  if (resto > r.valor * 0.005) items.push({ n: 'Sin asignar', imp: resto, pct: (resto / r.valor) * 100, resto: true });
+  return items;
 }
 const rentPos = p => { const e = p.precioEntrada, a = p.precioActual; return e > 0 && a > 0 ? ((a - e) / e) * 100 : null; };
 const monthsLeft = f => { const t = todayISO(), a = t.split('-').map(Number), b = f.split('-').map(Number); return (b[0] - a[0]) * 12 + (b[1] - a[1]); };
@@ -334,8 +349,13 @@ function vCartera() {
     '<div class="d">Has aportado ' + eur(lc.acum) + ' en total.</div></div>' : '';
   const list = rows.length ? '<div class="card"><div class="list">' + rows.slice().reverse().map(r =>
     '<button class="item plain" data-act="editMes" data-id="' + r.mes + '"><span class="t"><b>' + esc(mLabel(r.mes, true)) + '</b><small>Aportado ' + eur(r.ap) + ' · Total ' + eur(r.acum) + '</small></span><span class="r">' + (r.valor == null ? '—' : eur(r.valor)) + (r.gan == null ? '' : '<small class="' + (r.gan >= 0 ? 'dn-t' : 'up-t') + '">' + (r.gan >= 0 ? '▲ ' : '▼ ') + sgn(r.gan) + eur(Math.abs(r.gan)) + '</small>') + '</span></button>').join('') + '</div></div>' : empty('Aún no hay meses apuntados. Una vez al mes: lo que aportaste y lo que marca MyInvestor.');
+  // En qué está invertido: el reparto del último mes que lo tenga apuntado.
+  const lastRep = all.slice().reverse().find(r => repartoDe(r)), rp = lastRep ? repartoDe(lastRep) : null;
+  const repCard = rp ? '<div class="card"><div class="card-head"><h2>En qué está invertido</h2></div><p class="sub" style="margin:0">Según ' + esc(mLabel(lastRep.mes, true)) + '</p>' +
+    '<div class="splitbar" aria-hidden="true">' + rp.map((i, k) => '<span style="width:' + Math.max(i.pct, 0) + '%;background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></span>').join('') + '</div>' +
+    '<div class="splitleg">' + rp.map((i, k) => '<div><span><i class="dot" style="background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></i>' + esc(i.n) + '</span><span class="num">' + eur(i.imp) + ' <em>' + i.pct.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %</em></span></div>').join('') + '</div></div>' : '';
   return { html: '<div class="page">' + vh('Cartera', 'Tu cartera real en MyInvestor', 'cartera') + sum + chips + per +
-    '<div class="card"><div class="card-head"><h2>Evolución</h2></div><div class="legend"><span><i style="background:var(--s1)"></i>Valor de la cartera</span><span><i style="background:var(--s2)"></i>Total aportado</span></div><div class="chart" id="chCartera"></div></div>' + list + '</div>',
+    '<div class="card"><div class="card-head"><h2>Evolución</h2></div><div class="legend"><span><i style="background:var(--s1)"></i>Valor de la cartera</span><span><i style="background:var(--s2)"></i>Total aportado</span></div><div class="chart" id="chCartera"></div></div>' + repCard + list + '</div>',
     after() { drawLine($('#chCartera'), rows); } };
 }
 
@@ -380,7 +400,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.3</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.4</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -428,20 +448,45 @@ function sheetGasto(id) {
   setTimeout(() => { const i = $('#fCant'); if (i && !g) i.focus(); }, 60);
 }
 
+const repRow = (n, v, modo) => '<div class="reprow"><input name="rn" list="dlRep" maxlength="40" autocomplete="off" placeholder="Fondo o activo" aria-label="Nombre del fondo o activo" value="' + esc(n) + '"><input name="rv" inputmode="decimal" autocomplete="off" placeholder="' + (modo === 'eur' ? '€' : '%') + '" aria-label="' + (modo === 'eur' ? 'Importe en euros' : 'Porcentaje') + '" value="' + fmtIn(v) + '"><button type="button" class="btn ghost" data-act="delRep" aria-label="Quitar">' + icon('x') + '</button></div>';
 function sheetMes(mes) {
   const r = mes ? D.cartera.find(x => x.mes === mes) : null;
   const v = r || { mes: mk(todayISO()), aportado: '', valor: '' };
+  // Reparto: al editar, el de ese mes; en un mes nuevo, los mismos fondos del último mes que lo tenga (con sus % si estaba en %).
+  const prev = carteraRows().filter(x => x.rep && x.mes !== (r ? r.mes : '')).pop();
+  const vacio = { modo: 'pct', items: [{ n: '', v: '' }, { n: '', v: '' }] };
+  const base = r ? (r.rep || vacio) : prev ? { modo: prev.rep.modo, items: prev.rep.items.map(i => ({ n: i.n, v: prev.rep.modo === 'pct' ? i.v : '' })) } : vacio;
+  const names = [...new Set(D.cartera.flatMap(x => (x.rep && x.rep.items || []).map(i => i.n)).concat(D.seg.filter(p => p.tipo === 'fondo').map(p => p.nombre)))];
   openSheet(r ? 'Editar mes' : 'Apuntar un mes',
     '<div class="form"><p class="sub" style="margin:0">Una vez al mes: lo que aportaste y el valor que marca MyInvestor.</p>' +
     '<div class="fld"><label for="cMes">Mes</label><input id="cMes" name="mes" type="month" placeholder="2026-10" value="' + v.mes + '"' + (r ? ' readonly' : '') + '></div>' +
     '<div class="row2"><div class="fld"><label for="cAp">Aportado ese mes (€)</label><input id="cAp" name="ap" inputmode="decimal" autocomplete="off" placeholder="0" value="' + (r ? fmtIn(v.aportado) : '') + '"></div><div class="fld"><label for="cVal">Valor de la cartera (€)</label><input id="cVal" name="val" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (r ? fmtIn(v.valor) : '') + '"></div></div>' +
+    '<div class="fld"><span class="lb">¿En qué está invertido? (opcional)</span><div class="opts" role="radiogroup" aria-label="Cómo apuntar el reparto">' + opt('repModo', 'pct', base.modo !== 'eur', 'En %') + opt('repModo', 'eur', base.modo === 'eur', 'En €') + '</div>' +
+    '<div id="repRows" style="display:flex;flex-direction:column;gap:8px;margin-top:4px">' + base.items.map(i => repRow(i.n, i.v, base.modo)).join('') + '</div>' +
+    '<datalist id="dlRep">' + names.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>' +
+    '<button type="button" class="btn sm ghost" data-act="addRep" style="align-self:flex-start">' + icon('plus') + 'Añadir fondo o activo</button>' +
+    '<span class="help">Apunta cada uno con su porcentaje o su importe, como te sea más cómodo. Lo que no apuntes aparece como «Sin asignar». Al cambiar de % a €, los números se convierten solos con el valor de la cartera.</span></div>' +
     actions(r ? delBtn('mes', mes) : '', 'Guardar mes') + '</div>',
     fd => {
       const m = String(fd.get('mes') || ''), ap = num(fd.get('ap')), val = num(fd.get('val'));
       if (!isMonth(m)) return 'Pon un mes válido (por ejemplo 2026-10).';
       if (ap == null || ap < 0) return 'Pon lo aportado (puede ser 0).';
       if (val == null || val < 0) return 'Pon el valor de la cartera.';
-      D.cartera = D.cartera.filter(x => x.mes !== m); D.cartera.push({ mes: m, aportado: ap, valor: val });
+      const modo = fd.get('repModo') === 'eur' ? 'eur' : 'pct', rn = fd.getAll('rn'), rv = fd.getAll('rv'), items = [], seen = new Set();
+      for (let k = 0; k < rn.length; k++) {
+        const nombre = String(rn[k] || '').trim().slice(0, 40), raw = String(rv[k] || '').trim();
+        if (!raw) continue; // fila sin cantidad: se ignora
+        if (!nombre) return 'Falta el nombre de uno de los fondos o activos.';
+        const x = num(raw);
+        if (x == null || !(x > 0)) return 'Pon un ' + (modo === 'eur' ? 'importe' : 'porcentaje') + ' mayor que 0 para «' + nombre + '».';
+        if (seen.has(nombre.toLowerCase())) return '«' + nombre + '» está repetido.';
+        seen.add(nombre.toLowerCase()); items.push({ n: nombre, v: x });
+      }
+      const suma = items.reduce((a, b) => a + b.v, 0);
+      if (modo === 'pct' && suma > 100.05) return 'Los porcentajes suman ' + suma.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' %: no pueden pasar de 100 %.';
+      if (modo === 'eur' && suma > val + 0.01) return 'Los importes suman ' + eur(suma) + ', más que el valor de la cartera (' + eur(val) + ').';
+      const row = { mes: m, aportado: ap, valor: val }; if (items.length) row.rep = { modo, items };
+      D.cartera = D.cartera.filter(x => x.mes !== m); D.cartera.push(row);
       save(); render(); toast('Mes guardado');
     });
 }
@@ -589,6 +634,11 @@ const ACT = {
   gMes(el) { ui.gMes = el.dataset.m; render(); },
   cRango(el) { ui.cRango = el.dataset.r; render(); },
   segTipo(el) { ui.segTipo = el.dataset.t; render(); },
+  addRep() {
+    const box = $('#repRows'), modo = (document.querySelector('input[name="repModo"]:checked') || {}).value;
+    box.insertAdjacentHTML('beforeend', repRow('', '', modo)); const i = box.lastElementChild.querySelector('input'); if (i) i.focus();
+  },
+  delRep(el) { const row = el.closest('.reprow'); if (row) row.remove(); },
   addSec() { sheetSecs(); setTimeout(() => { const i = $('#scNueva'); if (i) i.focus(); }, 60); }, editSecs() { sheetSecs(); },
   tema(el) { D.ajustes.tema = el.dataset.v; save(); applyTheme(); render(); },
   pickFile() { $('#fileIn').value = ''; $('#fileIn').click(); },
@@ -618,6 +668,7 @@ document.addEventListener('change', e => {
   if (t.id === 'cmpA') { ui.cmpA = t.value; ui._cmpTouched = true; render(); }
   else if (t.id === 'cmpB') { ui.cmpB = t.value || null; ui._cmpTouched = true; render(); }
   else if (t.id === 'rDesde' || t.id === 'rHasta') rango();
+  else if (t.name === 'repModo') convertRep(t.value);
   else if (t.id === 'fileIn' && t.files && t.files[0]) {
     const f = t.files[0];
     if (f.size > 5e6) { toast('El archivo es demasiado grande'); return; }
@@ -629,6 +680,18 @@ document.addEventListener('change', e => {
 document.addEventListener('input', e => {
   if (e.target.id === 'q') { ui.q = e.target.value; $('#gList').innerHTML = gListHTML(); }
 });
+// Al cambiar el reparto de % a € (o al revés), convierte lo ya escrito usando el valor de la cartera.
+function convertRep(modo) {
+  const total = num(($('#cVal') || {}).value), inputs = [...document.querySelectorAll('#repRows input[name="rv"]')];
+  let sinConvertir = false;
+  inputs.forEach(inp => {
+    inp.placeholder = modo === 'eur' ? '€' : '%'; inp.setAttribute('aria-label', modo === 'eur' ? 'Importe en euros' : 'Porcentaje');
+    const x = num(inp.value); if (x == null) return;
+    if (!(total > 0)) { sinConvertir = true; return; }
+    inp.value = fmtIn(modo === 'eur' ? Math.round(x * total) / 100 : Math.round((x / total) * 1000) / 10);
+  });
+  if (sinConvertir) toast('Pon el valor de la cartera para convertir los números');
+}
 function rango() {
   const d = $('#rDesde').value, h = $('#rHasta').value, out = $('#rTotal');
   if (!d || !h) { out.textContent = 'Elige las dos fechas.'; return; }

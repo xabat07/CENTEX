@@ -235,6 +235,8 @@ dialog[open]{animation:sheetUp .24s cubic-bezier(.2,.8,.2,1)}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;padding:16px 12px 6px 20px;position:sticky;top:0;background:var(--surface);z-index:1}
 .sheet-head h2{font-size:19px;font-weight:800;letter-spacing:-.02em}
 #sheetBody{padding:8px 20px calc(env(safe-area-inset-bottom,0px) + 22px)}
+.reprow{display:grid;grid-template-columns:1fr 104px 46px;gap:8px;align-items:center}
+.reprow .btn{height:48px;padding:0;width:46px}
 .sheet-actions{display:flex;gap:10px;margin-top:6px}
 .sheet-actions .btn{flex:1}
 .pricerow{display:grid;grid-template-columns:1fr 130px;gap:12px;align-items:center}
