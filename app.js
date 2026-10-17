@@ -65,12 +65,31 @@ const catIcon = (c, sm) => '<svg class="ic' + (sm ? ' sm' : '') + '" style="colo
 
 /* ---------- 2. datos ---------- */
 const KEY = 'centex.v1';
-const blank = () => ({ gastos: [], cartera: [], seg: [], objetivos: [], ajustes: { tema: 'auto', ultimaCopia: null } });
+// Secciones de Seguimiento: por defecto Acciones y Fondos; el usuario puede añadir y borrar las suyas.
+const SECS0 = () => [{ id: 'accion', nombre: 'Acciones' }, { id: 'fondo', nombre: 'Fondos' }];
+function cleanSecs(a) {
+  const seen = new Set(), ok = [];
+  (Array.isArray(a) ? a : []).forEach(x => {
+    const id = x && typeof x.id === 'string' ? x.id.slice(0, 40) : '', nombre = x ? String(x.nombre == null ? '' : x.nombre).trim().slice(0, 30) : '';
+    if (id && nombre && !seen.has(id)) { seen.add(id); ok.push({ id, nombre }); }
+  });
+  return ok.length ? ok : SECS0();
+}
+// Si alguna posición apunta a una sección que no existe (copias antiguas), la crea.
+function ensureSecs(secs, seg) {
+  seg.forEach(p => {
+    if (!p.tipo) p.tipo = 'accion';
+    if (!secs.some(s => s.id === p.tipo)) secs.push({ id: p.tipo, nombre: p.tipo === 'accion' ? 'Acciones' : p.tipo === 'fondo' ? 'Fondos' : String(p.tipo).slice(0, 30) });
+  });
+  return secs;
+}
+const blank = () => ({ gastos: [], cartera: [], seg: [], secciones: SECS0(), objetivos: [], ajustes: { tema: 'auto', ultimaCopia: null } });
 function norm(o) {
   const b = blank(); o = o && typeof o === 'object' ? o : {};
+  const seg = Array.isArray(o.seg) ? o.seg : [];
   return {
     gastos: Array.isArray(o.gastos) ? o.gastos : [], cartera: Array.isArray(o.cartera) ? o.cartera : [],
-    seg: Array.isArray(o.seg) ? o.seg : [], objetivos: Array.isArray(o.objetivos) ? o.objetivos : [],
+    seg, secciones: ensureSecs(cleanSecs(o.secciones), seg), objetivos: Array.isArray(o.objetivos) ? o.objetivos : [],
     ajustes: Object.assign(b.ajustes, o.ajustes || {})
   };
 }
@@ -84,10 +103,11 @@ function cleanData(o) {
   const s = (v, max = 200) => String(v == null ? '' : v).slice(0, max);
   const n = v => { const x = typeof v === 'number' ? v : num(v); return isFinite(x) ? x : null; };
   const arr = k => (Array.isArray(o[k]) ? o[k] : []);
+  const seg = arr('seg').filter(x => x && s(x.nombre) && s(x.grupo)).map(x => ({ id: s(x.id || uid(), 40), tipo: s(x.tipo, 40).trim() || 'accion', grupo: s(x.grupo, 60), nombre: s(x.nombre, 80), ticker: s(x.ticker, 30), fecha: isDate(x.fecha) ? x.fecha : null, precioEntrada: n(x.precioEntrada), precioActual: n(x.precioActual), motivo: s(x.motivo, 400) }));
   return {
     gastos: arr('gastos').filter(x => x && isDate(x.fecha) && n(x.cant) != null).map(x => ({ id: s(x.id || uid(), 40), fecha: x.fecha, desc: s(x.desc, 80), cat: CATS.includes(x.cat) ? x.cat : 'Otros', cant: n(x.cant), pago: x.pago === 'Efectivo' ? 'Efectivo' : 'Tarjeta' })),
     cartera: arr('cartera').filter(x => x && isMonth(x.mes)).map(x => ({ mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) })),
-    seg: arr('seg').filter(x => x && s(x.nombre) && s(x.grupo)).map(x => ({ id: s(x.id || uid(), 40), tipo: x.tipo === 'fondo' ? 'fondo' : 'accion', grupo: s(x.grupo, 60), nombre: s(x.nombre, 80), ticker: s(x.ticker, 30), fecha: isDate(x.fecha) ? x.fecha : null, precioEntrada: n(x.precioEntrada), precioActual: n(x.precioActual), motivo: s(x.motivo, 400) })),
+    seg, secciones: ensureSecs(cleanSecs(o.secciones), seg),
     objetivos: arr('objetivos').filter(x => x && s(x.nombre) && n(x.meta) > 0).map(x => ({ id: s(x.id || uid(), 40), nombre: s(x.nombre, 60), meta: n(x.meta), ahorrado: n(x.ahorrado) || 0, fecha: isDate(x.fecha) ? x.fecha : null }))
   };
 }
@@ -319,18 +339,20 @@ function vCartera() {
     after() { drawLine($('#chCartera'), rows); } };
 }
 
+const secName = id => { const x = D.secciones.find(y => y.id === id); return x ? x.nombre : id; };
 function vSeg() {
+  if (!D.secciones.some(x => x.id === ui.segTipo)) ui.segTipo = D.secciones[0].id;
   const tipo = ui.segTipo, items = D.seg.filter(p => p.tipo === tipo);
   const groups = [...new Set(items.map(p => p.grupo))];
   const rs = items.map(rentPos).filter(r => r != null), avg = rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : null;
-  const head = '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div class="seg" role="group" aria-label="Tipo"><button data-act="segTipo" data-t="accion" aria-pressed="' + (tipo === 'accion') + '">Acciones</button><button data-act="segTipo" data-t="fondo" aria-pressed="' + (tipo === 'fondo') + '">Fondos</button></div>' +
-    (items.length ? '<button class="btn sm ghost" data-act="precios">Actualizar precios</button>' : '') + '</div>';
+  const chips = '<div class="chips" role="group" aria-label="Sección">' + D.secciones.map(x => '<button class="chip" style="text-transform:none" data-act="segTipo" data-t="' + esc(x.id) + '" aria-pressed="' + (tipo === x.id) + '">' + esc(x.nombre) + '</button>').join('') + '<button class="chip" style="text-transform:none" data-act="addSec" aria-label="Nueva sección">+ Nueva</button></div>';
+  const head = '<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;flex-wrap:wrap">' + (items.length ? '<button class="btn sm ghost" data-act="precios">Actualizar precios</button>' : '') + '<button class="btn sm ghost" data-act="editSecs">Secciones</button></div>';
   const sum = items.length ? '<p style="font-size:14px;color:var(--ink2);font-weight:600;padding:0 2px">' + items.length + ' en seguimiento' + (avg != null ? ' · rentabilidad media <span class="' + (avg >= 0 ? 'dn-t' : 'up-t') + '">' + (avg >= 0 ? '▲ ' : '▼ ') + pct(avg) + '</span>' : ' · sin precios actuales todavía') + '</p>' : '';
   const body = items.length ? '<div class="card">' + groups.map(g => '<div class="grp">' + esc(g) + '</div><div class="list">' + items.filter(p => p.grupo === g).map(p => {
     const r = rentPos(p);
     return '<button class="item plain" data-act="editSeg" data-id="' + esc(p.id) + '"><span class="t"><b>' + esc(p.nombre) + '</b><small>' + esc(p.ticker || '') + (p.precioEntrada != null ? ' · entrada ' + eur(p.precioEntrada) : '') + '</small></span><span class="r">' + (p.precioActual != null ? eur(p.precioActual) : '<small>sin precio</small>') + (r != null ? '<small class="' + (r >= 0 ? 'dn-t' : 'up-t') + '">' + (r >= 0 ? '▲ ' : '▼ ') + pct(r) + '</small>' : '') + '</span></button>';
-  }).join('') + '</div>').join('') + '</div>' : empty('Aún no hay ' + (tipo === 'accion' ? 'acciones' : 'fondos') + ' en seguimiento. Toca + para añadir la primera.');
-  return { html: '<div class="page">' + vh('Seguimiento', 'Paper trading: sin dinero real', 'seguimiento') + head + sum + body + '</div>' };
+  }).join('') + '</div>').join('') + '</div>' : empty('Aún no hay nada en «' + esc(secName(tipo)) + '». Toca + para añadir la primera posición.');
+  return { html: '<div class="page">' + vh('Seguimiento', 'Paper trading: sin dinero real', 'seguimiento') + chips + head + sum + body + '</div>' };
 }
 
 function vObj() {
@@ -358,7 +380,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.2</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.3</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -429,7 +451,7 @@ function sheetSeg(id) {
   const v = p || { tipo: ui.segTipo, grupo: '', nombre: '', ticker: '', fecha: '', precioEntrada: '', precioActual: '', motivo: '' };
   const groups = [...new Set(D.seg.map(x => x.grupo))];
   openSheet(p ? 'Editar posición' : 'Añadir al seguimiento',
-    '<div class="form"><div class="fld"><span class="lb">Tipo</span><div class="opts" role="radiogroup" aria-label="Tipo">' + opt('tipo', 'accion', v.tipo === 'accion', 'Acción') + opt('tipo', 'fondo', v.tipo === 'fondo', 'Fondo') + '</div></div>' +
+    '<div class="form"><div class="fld"><span class="lb">Sección</span><div class="opts" role="radiogroup" aria-label="Sección">' + D.secciones.map(x => opt('tipo', x.id, v.tipo === x.id, esc(x.nombre))).join('') + '</div></div>' +
     '<div class="fld"><label for="sNombre">Nombre</label><input id="sNombre" name="nombre" maxlength="80" autocomplete="off" value="' + esc(v.nombre) + '"></div>' +
     '<div class="row2"><div class="fld"><label for="sGrupo">Sector o tipo</label><input id="sGrupo" name="grupo" list="dlGrupos" maxlength="60" autocomplete="off" placeholder="Tecnología, Value…" value="' + esc(v.grupo) + '"><datalist id="dlGrupos">' + groups.map(g => '<option value="' + esc(g) + '">').join('') + '</datalist></div><div class="fld"><label for="sTicker">Ticker o ISIN</label><input id="sTicker" name="ticker" maxlength="30" autocomplete="off" value="' + esc(v.ticker) + '"></div></div>' +
     '<div class="row2"><div class="fld"><label for="sEnt">Precio de entrada (€)</label><input id="sEnt" name="pent" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioEntrada) + '"></div><div class="fld"><label for="sAct">Precio actual (€)</label><input id="sAct" name="pact" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioActual) + '"></div></div>' +
@@ -440,9 +462,32 @@ function sheetSeg(id) {
       const nombre = String(fd.get('nombre') || '').trim(), grupo = String(fd.get('grupo') || '').trim();
       if (!nombre || !grupo) return 'Pon al menos el nombre y el sector o tipo.';
       const f = fd.get('fecha');
-      const o = { id: p ? p.id : uid(), tipo: fd.get('tipo') === 'fondo' ? 'fondo' : 'accion', grupo: grupo.slice(0, 60), nombre: nombre.slice(0, 80), ticker: String(fd.get('ticker') || '').trim().slice(0, 30), fecha: isDate(f) ? f : null, precioEntrada: num(fd.get('pent')), precioActual: num(fd.get('pact')), motivo: String(fd.get('motivo') || '').trim().slice(0, 400) };
+      const o = { id: p ? p.id : uid(), tipo: D.secciones.some(x => x.id === fd.get('tipo')) ? fd.get('tipo') : D.secciones[0].id, grupo: grupo.slice(0, 60), nombre: nombre.slice(0, 80), ticker: String(fd.get('ticker') || '').trim().slice(0, 30), fecha: isDate(f) ? f : null, precioEntrada: num(fd.get('pent')), precioActual: num(fd.get('pact')), motivo: String(fd.get('motivo') || '').trim().slice(0, 400) };
       if (p) D.seg[D.seg.indexOf(p)] = o; else D.seg.push(o);
       ui.segTipo = o.tipo; save(); render(); toast(p ? 'Posición actualizada' : 'Añadido al seguimiento');
+    });
+}
+
+function sheetSecs() {
+  openSheet('Secciones de seguimiento',
+    '<div class="form"><p class="sub" style="margin:0">Cambia el nombre de una sección, bórrala o crea una nueva (por ejemplo, Cripto).</p>' +
+    D.secciones.map(x => {
+      const n = D.seg.filter(p => p.tipo === x.id).length;
+      return '<div class="fld"><label for="sc_' + esc(x.id) + '">' + (n ? n + ' posición' + (n === 1 ? '' : 'es') : 'Sin posiciones') + '</label><div style="display:flex;gap:8px"><input id="sc_' + esc(x.id) + '" name="n_' + esc(x.id) + '" maxlength="30" autocomplete="off" style="flex:1" value="' + esc(x.nombre) + '">' +
+        (D.secciones.length > 1 ? '<button type="button" class="btn sm danger" data-act="sheetDel" data-kind="sec" data-id="' + esc(x.id) + '">Borrar</button>' : '') + '</div>' +
+        (n && D.secciones.length > 1 ? '<span class="help">Si la borras, también se borran sus ' + n + ' posición' + (n === 1 ? '' : 'es') + '.</span>' : '') + '</div>';
+    }).join('') +
+    '<div class="fld"><label for="scNueva">Nueva sección</label><input id="scNueva" name="nueva" maxlength="30" autocomplete="off" placeholder="Cripto"></div>' +
+    actions('', 'Guardar') + '</div>',
+    fd => {
+      const names = D.secciones.map(x => [x, String(fd.get('n_' + x.id) || '').trim()]);
+      if (names.some(a => !a[1])) return 'Ninguna sección puede quedarse sin nombre.';
+      const nueva = String(fd.get('nueva') || '').trim();
+      const all = names.map(a => a[1].toLowerCase()).concat(nueva ? [nueva.toLowerCase()] : []);
+      if (new Set(all).size !== all.length) return 'Hay dos secciones con el mismo nombre.';
+      names.forEach(a => { a[0].nombre = a[1].slice(0, 30); });
+      if (nueva) { const x = { id: 's_' + uid(), nombre: nueva.slice(0, 30) }; D.secciones.push(x); ui.segTipo = x.id; }
+      save(); render(); toast(nueva ? 'Sección creada' : 'Secciones guardadas');
     });
 }
 
@@ -501,11 +546,13 @@ function sheetImport(data) {
     (have ? '<div class="fld"><span class="lb">¿Qué hacemos con lo que ya tienes?</span><div class="opts" role="radiogroup">' + opt('modo', 'combinar', true, 'Combinar') + opt('modo', 'reemplazar', false, 'Reemplazar todo') + '</div><span class="help">Combinar añade lo nuevo sin tocar lo que ya tienes.</span></div>' : '<input type="hidden" name="modo" value="reemplazar">') +
     actions('', 'Importar') + '</div>',
     fd => {
-      if (fd.get('modo') === 'reemplazar') { D.gastos = c.gastos; D.cartera = c.cartera; D.seg = c.seg; D.objetivos = c.objetivos; }
+      if (fd.get('modo') === 'reemplazar') { D.gastos = c.gastos; D.cartera = c.cartera; D.seg = c.seg; D.secciones = c.secciones; D.objetivos = c.objetivos; }
       else {
         const has = (arr, id) => arr.some(x => x.id === id);
         c.gastos.forEach(x => { if (!has(D.gastos, x.id)) D.gastos.push(x); });
+        c.secciones.forEach(x => { if (!D.secciones.some(y => y.id === x.id)) D.secciones.push(x); });
         c.seg.forEach(x => { if (!has(D.seg, x.id)) D.seg.push(x); });
+        ensureSecs(D.secciones, D.seg);
         c.objetivos.forEach(x => { if (!has(D.objetivos, x.id)) D.objetivos.push(x); });
         c.cartera.forEach(x => { D.cartera = D.cartera.filter(y => y.mes !== x.mes); D.cartera.push(x); });
       }
@@ -529,8 +576,9 @@ function doDelete(kind, id) {
   else if (kind === 'mes') D.cartera = D.cartera.filter(x => x.mes !== id);
   else if (kind === 'seg') D.seg = D.seg.filter(x => x.id !== id);
   else if (kind === 'obj') D.objetivos = D.objetivos.filter(x => x.id !== id);
+  else if (kind === 'sec') { if (D.secciones.length <= 1) return; D.seg = D.seg.filter(x => x.tipo !== id); D.secciones = D.secciones.filter(x => x.id !== id); }
   else if (kind === 'all') { const a = D.ajustes; D = blank(); D.ajustes = a; }
-  save(); closeSheet(); render(); toast(kind === 'all' ? 'Todo borrado' : 'Borrado');
+  save(); closeSheet(); render(); toast(kind === 'all' ? 'Todo borrado' : kind === 'sec' ? 'Sección borrada' : 'Borrado');
 }
 const ACT = {
   fab() { const f = FAB[route()]; if (f) ACT[f[1]](); },
@@ -541,10 +589,11 @@ const ACT = {
   gMes(el) { ui.gMes = el.dataset.m; render(); },
   cRango(el) { ui.cRango = el.dataset.r; render(); },
   segTipo(el) { ui.segTipo = el.dataset.t; render(); },
+  addSec() { sheetSecs(); setTimeout(() => { const i = $('#scNueva'); if (i) i.focus(); }, 60); }, editSecs() { sheetSecs(); },
   tema(el) { D.ajustes.tema = el.dataset.v; save(); applyTheme(); render(); },
   pickFile() { $('#fileIn').value = ''; $('#fileIn').click(); },
   export() {
-    download('centex-copia-' + todayISO() + '.json', JSON.stringify({ app: 'centex', version: 1, exportado: new Date().toISOString(), gastos: D.gastos, cartera: D.cartera, seg: D.seg, objetivos: D.objetivos }, null, 2), 'application/json');
+    download('centex-copia-' + todayISO() + '.json', JSON.stringify({ app: 'centex', version: 1, exportado: new Date().toISOString(), gastos: D.gastos, cartera: D.cartera, seg: D.seg, secciones: D.secciones, objetivos: D.objetivos }, null, 2), 'application/json');
     D.ajustes.ultimaCopia = todayISO(); save(); render(); toast('Copia descargada');
   },
   exportCsv() {
