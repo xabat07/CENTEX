@@ -145,9 +145,9 @@ function drawCompare(el, a, b) {
   });
   el.innerHTML = s + '</svg>';
 }
-function drawLine(el) {
+function drawLine(el, src) {
   if (!el) return;
-  const rows = carteraRows().filter(r => r.valor != null);
+  const rows = (src || carteraRows()).filter(r => r.valor != null);
   if (!rows.length) { el.innerHTML = empty('Apunta tu primer mes en Cartera y aquí verás cómo evoluciona lo aportado frente al valor.'); return; }
   const W = Math.max(el.clientWidth, 260), H = 240, L = 50, R = 70, T = 16, B = 28, iw = W - L - R, ih = H - T - B, n = rows.length;
   const mx = Math.max(...rows.flatMap(r => [r.valor, r.acum]), 1), step = niceStep(mx / 4), top = Math.ceil(mx / step) * step;
@@ -169,7 +169,7 @@ function drawLine(el) {
 }
 
 /* ---------- 5. pantallas ---------- */
-const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null };
+const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null, cRango: 'todo' };
 const ROUTES = ['inicio', 'gastos', 'cartera', 'seguimiento', 'objetivos', 'ajustes'];
 const NAV = [['inicio', 'Inicio', 'home'], ['gastos', 'Gastos', 'receipt'], ['cartera', 'Cartera', 'pie'], ['seguimiento', 'Seguimiento', 'trend'], ['objetivos', 'Objetivos', 'target']];
 const FAB = { inicio: ['Nuevo gasto', 'addGasto'], gastos: ['Nuevo gasto', 'addGasto'], cartera: ['Apuntar mes', 'addMes'], seguimiento: ['Añadir', 'addSeg'], objetivos: ['Nuevo objetivo', 'addObj'] };
@@ -282,15 +282,33 @@ function vGastos() {
   return { html };
 }
 
+const C_RANGOS = [['todo', 'Todo'], ['12', 'Últimos 12 meses'], ['6', 'Últimos 6 meses'], ['3', 'Últimos 3 meses']];
 function vCartera() {
-  const rows = carteraRows(), cr = rows.filter(r => r.valor != null), lc = cr[cr.length - 1];
+  const all = carteraRows(), cr = all.filter(r => r.valor != null), lc = cr[cr.length - 1];
+  // Filtro por periodo: se cuenta hacia atrás desde el último mes apuntado.
+  if (!C_RANGOS.some(c => c[0] === ui.cRango)) ui.cRango = 'todo';
+  const nR = ui.cRango === 'todo' ? 0 : +ui.cRango;
+  const from = nR && all.length ? addM(all[all.length - 1].mes, -(nR - 1)) : null;
+  const rows = from ? all.filter(r => r.mes >= from) : all;
+  const chips = all.length > 3 ? '<div class="chips" role="group" aria-label="Periodo">' + C_RANGOS.map(c => '<button class="chip" data-act="cRango" data-r="' + c[0] + '" style="text-transform:none" aria-pressed="' + (ui.cRango === c[0]) + '">' + c[1] + '</button>').join('') + '</div>' : '';
+  // Resumen del periodo: lo aportado y lo ganado desde el último valor anterior al periodo.
+  let per = '';
+  if (from && chips) {
+    const withV = rows.filter(r => r.valor != null), lastV = withV[withV.length - 1];
+    if (lastV) {
+      const before = all.filter(r => r.mes < from && r.valor != null), base = before.length ? before[before.length - 1] : null, baseMes = base ? base.mes : '';
+      const apPer = all.filter(r => r.mes > baseMes && r.mes <= lastV.mes).reduce((s, r) => s + r.ap, 0);
+      const gan = lastV.valor - (base ? base.valor : 0) - apPer;
+      per = '<p style="font-size:14px;color:var(--ink2);font-weight:600;padding:0 2px">Últimos ' + nR + ' meses · aportado ' + eur(apPer) + ' · ' + (gan >= 0 ? 'ganancia ' : 'pérdida ') + '<span class="' + (gan >= 0 ? 'dn-t' : 'up-t') + '">' + (gan >= 0 ? '▲ ' : '▼ ') + sgn(gan) + eur(Math.abs(gan)) + '</span></p>';
+    }
+  }
   const sum = lc ? '<div class="card stat"><div class="l">Valor actual · ' + esc(mLabel(lc.mes, true)) + '</div><div class="v">' + eur(lc.valor) + '</div>' + deltaPill(lc.gan, lc.rent) +
     '<div class="d">Has aportado ' + eur(lc.acum) + ' en total.</div></div>' : '';
   const list = rows.length ? '<div class="card"><div class="list">' + rows.slice().reverse().map(r =>
     '<button class="item plain" data-act="editMes" data-id="' + r.mes + '"><span class="t"><b>' + esc(mLabel(r.mes, true)) + '</b><small>Aportado ' + eur(r.ap) + ' · Total ' + eur(r.acum) + '</small></span><span class="r">' + (r.valor == null ? '—' : eur(r.valor)) + (r.gan == null ? '' : '<small class="' + (r.gan >= 0 ? 'dn-t' : 'up-t') + '">' + (r.gan >= 0 ? '▲ ' : '▼ ') + sgn(r.gan) + eur(Math.abs(r.gan)) + '</small>') + '</span></button>').join('') + '</div></div>' : empty('Aún no hay meses apuntados. Una vez al mes: lo que aportaste y lo que marca MyInvestor.');
-  return { html: '<div class="page">' + vh('Cartera', 'Tu cartera real en MyInvestor', 'cartera') + sum +
+  return { html: '<div class="page">' + vh('Cartera', 'Tu cartera real en MyInvestor', 'cartera') + sum + chips + per +
     '<div class="card"><div class="card-head"><h2>Evolución</h2></div><div class="legend"><span><i style="background:var(--s1)"></i>Valor de la cartera</span><span><i style="background:var(--s2)"></i>Total aportado</span></div><div class="chart" id="chCartera"></div></div>' + list + '</div>',
-    after() { drawLine($('#chCartera')); } };
+    after() { drawLine($('#chCartera'), rows); } };
 }
 
 function vSeg() {
@@ -332,7 +350,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.0</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.1</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -513,6 +531,7 @@ const ACT = {
   editObj(el) { sheetObj(el.dataset.id); }, aportar(el) { sheetAportar(el.dataset.id); }, precios() { sheetPrecios(); },
   goSettings() { location.hash = '#/ajustes'; }, closeSheet() { closeSheet(); }, wipe() { sheetWipe(); },
   gMes(el) { ui.gMes = el.dataset.m; render(); },
+  cRango(el) { ui.cRango = el.dataset.r; render(); },
   segTipo(el) { ui.segTipo = el.dataset.t; render(); },
   tema(el) { D.ajustes.tema = el.dataset.v; save(); applyTheme(); render(); },
   pickFile() { $('#fileIn').value = ''; $('#fileIn').click(); },
