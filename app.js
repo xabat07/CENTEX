@@ -51,9 +51,17 @@ const ICON = {
   sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
-  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>'
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  pizza: '<path d="M12 21L4.5 7.8Q12 4 19.5 7.8z"/><circle cx="10.4" cy="10.2" r="1"/><circle cx="13.6" cy="13.4" r="1"/>',
+  ticket: '<path d="M3 8a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v2.5a1.5 1.5 0 0 0 0 3V16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-2.5a1.5 1.5 0 0 0 0-3z"/><path d="M14 8.5v1M14 11.5v1M14 14.5v1"/>',
+  bus: '<path d="M5 4h14a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M4 11h16"/><circle cx="8" cy="19" r="1.5"/><circle cx="16" cy="19" r="1.5"/><circle cx="7.5" cy="14" r=".6" fill="currentColor"/><circle cx="16.5" cy="14" r=".6" fill="currentColor"/>',
+  bag: '<path d="M5 8h14l-1 12H6z"/><path d="M9 8V7a3 3 0 0 1 6 0v1"/>',
+  dots: '<circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/>'
 };
 const icon = n => '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">' + ICON[n] + '</svg>';
+// Icono de cada categoría de gasto, del color de la categoría. sm = versión pequeña para textos y formularios.
+const CAT_ICON = { Comida: 'pizza', Ocio: 'ticket', Transporte: 'bus', Compras: 'bag', Otros: 'dots' };
+const catIcon = (c, sm) => '<svg class="ic' + (sm ? ' sm' : '') + '" style="color:' + catColor(c) + '" viewBox="0 0 24 24" aria-hidden="true">' + ICON[CAT_ICON[c] || 'dots'] + '</svg>';
 
 /* ---------- 2. datos ---------- */
 const KEY = 'centex.v1';
@@ -242,7 +250,7 @@ function backupDue() {
 
 function gastoRowHTML(x) {
   const c = catColor(x.cat);
-  return '<button class="item" data-act="editGasto" data-id="' + esc(x.id) + '"><span class="badge" style="background:color-mix(in srgb,' + c + ' 18%,var(--surface))"><i style="width:14px;height:14px;border-radius:50%;background:' + c + ';display:block"></i></span>' +
+  return '<button class="item" data-act="editGasto" data-id="' + esc(x.id) + '"><span class="badge" style="background:color-mix(in srgb,' + c + ' 18%,var(--surface))">' + catIcon(x.cat) + '</span>' +
     '<span class="t"><b>' + esc(x.desc || x.cat) + '</b><small>' + esc(x.cat) + ' · ' + esc(x.pago) + '</small></span><span class="r">' + eur(x.cant) + '</span></button>';
 }
 function gListHTML() {
@@ -256,7 +264,7 @@ function gListHTML() {
     const by = CATS.map(c => [c, list.filter(x => x.cat === c).reduce((s, x) => s + x.cant, 0)]).filter(a => a[1] > 0).sort((a, b) => b[1] - a[1]);
     summary = '<div class="card"><div class="total-line"><b>' + eur(tot) + '</b><span>' + list.length + ' gasto' + (list.length > 1 ? 's' : '') + '</span></div>' +
       '<div class="splitbar" aria-hidden="true">' + by.map(a => '<span style="width:' + (a[1] / tot) * 100 + '%;background:' + catColor(a[0]) + '"></span>').join('') + '</div>' +
-      '<div class="splitleg">' + by.map(a => '<div><span><i class="dot" style="background:' + catColor(a[0]) + '"></i>' + a[0] + '</span><span class="num">' + eur(a[1]) + ' <em>' + Math.round((a[1] / tot) * 100) + '%</em></span></div>').join('') + '</div></div>';
+      '<div class="splitleg">' + by.map(a => '<div><span>' + catIcon(a[0], true) + a[0] + '</span><span class="num">' + eur(a[1]) + ' <em>' + Math.round((a[1] / tot) * 100) + '%</em></span></div>').join('') + '</div></div>';
   }
   let body;
   if (!list.length) body = empty(D.gastos.length ? 'No hay gastos con ese filtro. Prueba otro mes o borra la búsqueda.' : 'Aún no hay gastos. Toca + para apuntar el primero.');
@@ -350,7 +358,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.1</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.2</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -383,7 +391,7 @@ function sheetGasto(id) {
   const v = g || { fecha: todayISO(), desc: '', cat: 'Comida', cant: '', pago: 'Tarjeta' };
   openSheet(g ? 'Editar gasto' : 'Nuevo gasto',
     '<div class="form"><div class="fld amount"><label for="fCant">Cantidad (€)</label><input id="fCant" name="cant" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (g ? fmtIn(v.cant) : '') + '"></div>' +
-    '<div class="fld"><span class="lb">Categoría</span><div class="opts" role="radiogroup" aria-label="Categoría">' + CATS.map(c => opt('cat', c, v.cat === c, '<i class="dot" style="background:' + catColor(c) + '"></i>' + c)).join('') + '</div></div>' +
+    '<div class="fld"><span class="lb">Categoría</span><div class="opts" role="radiogroup" aria-label="Categoría">' + CATS.map(c => opt('cat', c, v.cat === c, catIcon(c, true) + c)).join('') + '</div></div>' +
     '<div class="fld"><label for="fDesc">Descripción</label><input id="fDesc" name="desc" autocomplete="off" maxlength="80" placeholder="Menú, cine, bus…" value="' + esc(v.desc) + '"></div>' +
     '<div class="row2"><div class="fld"><label for="fFecha">Fecha</label><input id="fFecha" name="fecha" type="date" value="' + v.fecha + '"></div><div class="fld"><span class="lb">Pago</span><div class="opts" role="radiogroup" aria-label="Forma de pago">' + ['Tarjeta', 'Efectivo'].map(p => opt('pago', p, v.pago === p, p)).join('') + '</div></div></div>' +
     actions(g ? delBtn('gasto', id) : '', g ? 'Guardar' : 'Añadir gasto') + '</div>',
