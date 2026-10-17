@@ -35,7 +35,7 @@ const fmtIn = n => (n == null ? '' : String(n).replace('.', ','));
 const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) && !isNaN(new Date(s + 'T00:00:00'));
 const isMonth = s => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(s || ''));
 function niceStep(x) { if (x <= 0) return 10; const p = Math.pow(10, Math.floor(Math.log10(x))); const f = x / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; }
-const fmtAx = v => (v >= 1000 ? (v / 1000).toString().replace('.', ',') + 'k' : v.toString().replace('.', ',')) + ' €';
+const fmtAx = v => (v >= 1e6 ? (v / 1e6).toString().replace('.', ',') + ' M' : v >= 1000 ? (v / 1000).toString().replace('.', ',') + 'k' : v.toString().replace('.', ',')) + ' €';
 let toastT;
 function toast(m) { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(toastT); toastT = setTimeout(() => (t.style.display = 'none'), 2800); }
 
@@ -144,6 +144,9 @@ function repartoDe(r) {
   if (resto > r.valor * 0.005) items.push({ n: 'Sin asignar', imp: resto, pct: (resto / r.valor) * 100, resto: true });
   return items;
 }
+// Escenarios: interés compuesto mes a mes. La rentabilidad anual se reparte en 12 meses y la aportación entra a final de cada mes.
+const rmOf = r => Math.pow(1 + r / 100, 1 / 12) - 1;
+const fvOf = (p, a, rm, n) => (rm === 0 ? p + a * n : p * Math.pow(1 + rm, n) + (a * (Math.pow(1 + rm, n) - 1)) / rm);
 const rentPos = p => { const e = p.precioEntrada, a = p.precioActual; return e > 0 && a > 0 ? ((a - e) / e) * 100 : null; };
 const monthsLeft = f => { const t = todayISO(), a = t.split('-').map(Number), b = f.split('-').map(Number); return (b[0] - a[0]) * 12 + (b[1] - a[1]); };
 
@@ -211,14 +214,39 @@ function drawLine(el, src) {
   el.innerHTML = s + '<line class="axis" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(0) + '" y2="' + y(0) + '"/></svg>';
 }
 
+const shortEur = v => (v >= 1e6 ? (v / 1e6).toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' M €' : eur(Math.round(v), 0));
+function drawProj(el, rows) {
+  if (!el) return;
+  const W = Math.max(el.clientWidth, 260), H = 240, L = 56, R = 72, T = 16, B = 28, iw = W - L - R, ih = H - T - B, n = rows.length;
+  const mx = Math.max(...rows.flatMap(r => [r.valor, r.aport]), 1), step = niceStep(mx / 4), top = Math.ceil(mx / step) * step;
+  const x = i => (n === 1 ? L + iw / 2 : L + (iw * i) / (n - 1)), y = v => T + ih - (Math.max(v, 0) / top) * ih;
+  let s = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Cómo crecería el dinero año a año">';
+  for (let v = 0; v <= top + 1e-9; v += step) s += '<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v) + '" y2="' + y(v) + '"/><text x="' + (L - 8) + '" y="' + (y(v) + 4) + '" text-anchor="end">' + fmtAx(Math.round(v * 100) / 100) + '</text>';
+  const path = f => rows.map((r, i) => (i ? 'L' : 'M') + x(i) + ' ' + y(r[f])).join(' ');
+  s += '<path d="' + path('aport') + '" fill="none" style="stroke:var(--s2);stroke-width:2.5;stroke-linejoin:round"/><path d="' + path('valor') + '" fill="none" style="stroke:var(--s1);stroke-width:2.5;stroke-linejoin:round"/>';
+  const total = rows[n - 1].y, stepY = [1, 2, 5, 10, 20, 50].find(k => total / k <= 5) || 50;
+  rows.forEach((r, i) => {
+    if (n <= 12) s += '<circle cx="' + x(i) + '" cy="' + y(r.aport) + '" r="3.5" style="fill:var(--s2);stroke:var(--surface);stroke-width:2"/><circle cx="' + x(i) + '" cy="' + y(r.valor) + '" r="3.5" style="fill:var(--s1);stroke:var(--surface);stroke-width:2"/>';
+    if ((Number.isInteger(r.y) && r.y % stepY === 0) || (i === n - 1 && !Number.isInteger(r.y))) s += '<text x="' + x(i) + '" y="' + (H - 8) + '" text-anchor="middle">' + (i === 0 ? 'Hoy' : r.y.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' a.') + '</text>';
+    const gan = r.valor - r.aport;
+    const tip = (i === 0 ? 'Hoy' : 'Dentro de ' + r.y.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + (r.y === 1 ? ' año' : ' años')) + '\nTendrías: ' + eur(r.valor, 0) + '\nHabrías aportado: ' + eur(r.aport, 0) + '\nGanancia: ' + sgn(gan) + eur(Math.abs(gan), 0);
+    s += '<rect x="' + (x(i) - iw / Math.max(n - 1, 1) / 2) + '" y="' + T + '" width="' + iw / Math.max(n - 1, 1) + '" height="' + ih + '" fill="transparent" data-tip="' + esc(tip) + '"/>';
+  });
+  const last = rows[n - 1]; let y1 = y(last.valor) + 4, y2 = y(last.aport) + 4;
+  if (Math.abs(y1 - y2) < 15) { if (y1 <= y2) { y1 -= 8; y2 += 8; } else { y1 += 8; y2 -= 8; } }
+  s += '<text class="val" x="' + (x(n - 1) + 11) + '" y="' + y1 + '">' + shortEur(last.valor) + '</text><text x="' + (x(n - 1) + 11) + '" y="' + y2 + '">' + shortEur(last.aport) + '</text>';
+  el.innerHTML = s + '<line class="axis" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(0) + '" y2="' + y(0) + '"/></svg>';
+}
+
 /* ---------- 5. pantallas ---------- */
-const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null, cRango: 'todo' };
+const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null, cRango: 'todo', objTab: 'obj', sim: null };
 const ROUTES = ['inicio', 'gastos', 'cartera', 'seguimiento', 'objetivos', 'ajustes'];
 const NAV = [['inicio', 'Inicio', 'home'], ['gastos', 'Gastos', 'receipt'], ['cartera', 'Cartera', 'pie'], ['seguimiento', 'Seguimiento', 'trend'], ['objetivos', 'Objetivos', 'target']];
 const FAB = { inicio: ['Nuevo gasto', 'addGasto'], gastos: ['Nuevo gasto', 'addGasto'], cartera: ['Apuntar mes', 'addMes'], seguimiento: ['Añadir', 'addSeg'], objetivos: ['Nuevo objetivo', 'addObj'] };
+const fabOf = r => (r === 'objetivos' && ui.objTab === 'esc' ? null : FAB[r]);
 const route = () => { const r = (location.hash || '').replace(/^#\/?/, ''); return ROUTES.includes(r) ? r : 'inicio'; };
 
-const vh = (t, sub, r) => '<div class="vh"><div><h1>' + t + '</h1>' + (sub ? '<p class="sub">' + sub + '</p>' : '') + '</div>' + (FAB[r] ? '<button class="btn" data-act="' + FAB[r][1] + '">' + icon('plus') + FAB[r][0] + '</button>' : '') + '</div>';
+const vh = (t, sub, r) => '<div class="vh"><div><h1>' + t + '</h1>' + (sub ? '<p class="sub">' + sub + '</p>' : '') + '</div>' + (fabOf(r) ? '<button class="btn" data-act="' + fabOf(r)[1] + '">' + icon('plus') + fabOf(r)[0] + '</button>' : '') + '</div>';
 const deltaPill = (v, p) => v == null ? '' : '<span class="pill ' + (v > 0 ? 'good' : v < 0 ? 'bad' : 'flat') + '">' + (v > 0 ? '▲' : v < 0 ? '▼' : '') + ' ' + sgn(v) + eur(Math.abs(v)) + (p != null ? ' · ' + pct(p) : '') + '</span>';
 
 function vInicio() {
@@ -375,7 +403,52 @@ function vSeg() {
   return { html: '<div class="page">' + vh('Seguimiento', 'Paper trading: sin dinero real', 'seguimiento') + chips + head + sum + body + '</div>' };
 }
 
+const objTabs = () => '<div class="chips" role="group" aria-label="Apartado">' + [['obj', 'Mis objetivos'], ['esc', 'Escenarios']].map(c => '<button class="chip" style="text-transform:none" data-act="objTab" data-t="' + c[0] + '" aria-pressed="' + (ui.objTab === c[0]) + '">' + c[1] + '</button>').join('') + '</div>';
+function vEsc() {
+  if (!ui.sim) {
+    const lv = carteraRows().filter(r => r.valor != null).pop();
+    ui.sim = { ini: lv ? fmtIn(Math.round(lv.valor)) : '', mes: lv && lv.ap > 0 ? fmtIn(Math.round(lv.ap)) : '', anios: '10', rent: '7', infl: '', meta: '' };
+  }
+  const S = ui.sim, f = (id, label, val, ph, help) => '<div class="fld"><label for="' + id + '">' + label + '</label><input id="' + id + '" inputmode="decimal" autocomplete="off" placeholder="' + ph + '" value="' + esc(val) + '">' + (help ? '<span class="help">' + help + '</span>' : '') + '</div>';
+  const html = '<div class="page">' + vh('Objetivos', 'Calcula cómo podría crecer tu dinero', 'objetivos') + objTabs() +
+    '<div class="card"><h2>Escenarios</h2><p class="sub">Pon unos números y mira cuánto podrías tener. Es una simulación, no una promesa.</p><div id="escForm" role="group" aria-label="Datos de la simulación" style="display:flex;flex-direction:column;gap:12px">' +
+    '<div class="row2">' + f('esIni', 'Dinero que tienes (€)', S.ini, '0', S.ini ? 'Es tu cartera actual; cámbialo si quieres.' : '') + f('esMes', 'Aportación al mes (€)', S.mes, '0') + '</div>' +
+    '<div class="row2">' + f('esAn', 'Durante cuántos años', S.anios, '10') + f('esRent', 'Rentabilidad anual (%)', S.rent, '7', 'Un ejemplo, no una predicción.') + '</div>' +
+    '<div class="row2">' + f('esMeta', 'Meta (€, opcional)', S.meta, 'Ej. 20000', 'Te digo cuánto aportar al mes.') + f('esInfl', 'Inflación anual (%, opcional)', S.infl, 'Ej. 2', 'Para ver el resultado en euros de hoy.') + '</div>' +
+    '</div></div><div id="escOut" style="display:flex;flex-direction:column;gap:14px"></div></div>';
+  return { html, after() { renderEsc(); } };
+}
+function readEsc() { const v = id => (($('#' + id) || {}).value || ''); ui.sim = { ini: v('esIni'), mes: v('esMes'), anios: v('esAn'), rent: v('esRent'), infl: v('esInfl'), meta: v('esMeta') }; }
+function renderEsc() {
+  const out = $('#escOut'); if (!out || !ui.sim) return;
+  const S = ui.sim, opt0 = t => (String(t).trim() === '' ? 0 : num(t));
+  const ini = opt0(S.ini), mes = opt0(S.mes), an = num(S.anios), r = num(S.rent), inf = opt0(S.infl), meta = String(S.meta).trim() === '' ? null : num(S.meta);
+  const bad = m => { out.innerHTML = empty(m); };
+  if (ini == null || ini < 0 || mes == null || mes < 0) return bad('Revisa el dinero que tienes y la aportación: tienen que ser números de 0 o más.');
+  if (!ini && !mes) return bad('Pon el dinero que tienes o lo que aportas al mes para empezar.');
+  if (an == null || an < 0.5 || an > 60) return bad('Pon los años que quieres simular (entre 0,5 y 60).');
+  if (r == null || r < -50 || r > 100) return bad('Pon la rentabilidad anual como un número entre −50 y 100.');
+  if (inf == null || inf < 0 || inf > 50) return bad('La inflación tiene que estar entre 0 y 50.');
+  if (meta != null && !(meta > 0)) return bad('La meta tiene que ser mayor que 0, o déjala vacía.');
+  const n = Math.round(an * 12), rm = rmOf(r), final = fvOf(ini, mes, rm, n), aport = ini + mes * n, gan = final - aport, anTxt = an === 1 ? '1 año' : an.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' años';
+  const rows = []; for (let m = 0; m <= n; m += 12) rows.push({ y: m / 12, valor: fvOf(ini, mes, rm, m), aport: ini + mes * m });
+  if (n % 12) rows.push({ y: n / 12, valor: final, aport });
+  const rtxt = x => x.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' %';
+  let h = '<div class="card stat"><div class="l">Dentro de ' + anTxt + ' tendrías</div><div class="v">' + eur(final, 0) + '</div><span class="pill ' + (gan > 0 ? 'good' : gan < 0 ? 'bad' : 'flat') + '">' + (gan > 0 ? '▲' : gan < 0 ? '▼' : '') + ' ' + sgn(gan) + eur(Math.abs(gan), 0) + (aport > 0 ? ' · ' + pct((gan / aport) * 100) : '') + '</span>' +
+    '<div class="d">Habrías aportado ' + eur(aport, 0) + ' en total' + (gan > 0 ? ' y el resto (' + eur(gan, 0) + ') lo habría puesto la rentabilidad.' : '.') + '</div>' +
+    (inf > 0 ? '<div class="d">En euros de hoy, con ' + rtxt(inf) + ' de inflación al año: <b>' + eur(final / Math.pow(1 + inf / 100, n / 12), 0) + '</b></div>' : '') + '</div>';
+  if (meta != null) {
+    const pw = Math.pow(1 + rm, n), need = rm === 0 ? (meta - ini) / n : ((meta - ini * pw) * rm) / (pw - 1), ahora = mes > 0 ? ' (ahora pones ' + eur(mes, 0) + ')' : '';
+    h += '<div class="card"><h2>Para llegar a ' + eur(meta, 0) + '</h2><p style="font-size:14px;margin:0">' + (need <= 0 ? 'Solo con lo que ya tienes llegarías a tu meta, sin aportar nada más.' : final >= meta ? 'Llegarías a tu meta. Te bastaría con aportar <b>' + eur(need, 0) + ' al mes</b>' + ahora + '.' : 'Necesitarías aportar <b>' + eur(need, 0) + ' al mes</b>' + ahora + ', es decir, ' + eur(need - mes, 0) + ' más al mes.') + '</p></div>';
+  }
+  const sc = [r - 3, r, r + 3].filter(x => x >= -50 && x <= 100);
+  h += '<div class="card"><h2>¿Y si la rentabilidad fuera otra?</h2><p class="sub">Nadie sabe qué rentabilidad saldrá. Mira el abanico.</p><div class="splitleg">' + sc.map(x => '<div><span>' + (x === r ? '<b>Con tu ' + rtxt(x) + '</b>' : 'Con ' + rtxt(x)) + '</span><span class="num">' + eur(fvOf(ini, mes, rmOf(x), n), 0) + '</span></div>').join('') + '</div></div>';
+  h += '<div class="card"><div class="card-head"><h2>Cómo crecería</h2></div><div class="legend"><span><i style="background:var(--s1)"></i>Lo que tendrías</span><span><i style="background:var(--s2)"></i>Lo que habrías aportado</span></div><div class="chart" id="chEsc"></div></div>' +
+    '<p class="sub" style="text-align:center;padding:0 8px">Simulación sencilla: la rentabilidad real cambia cada año y puede ser negativa. No es una promesa ni un consejo de inversión.</p>';
+  out.innerHTML = h; drawProj($('#chEsc'), rows);
+}
 function vObj() {
+  if (ui.objTab === 'esc') return vEsc();
   const body = D.objetivos.length ? D.objetivos.map(o => {
     const p = Math.min(100, (o.ahorrado / o.meta) * 100), falta = Math.max(o.meta - o.ahorrado, 0), done = o.ahorrado >= o.meta;
     let extra = '';
@@ -385,7 +458,7 @@ function vObj() {
       '<div class="goal-nums"><b class="num">' + eur(o.ahorrado) + '</b><span class="num">' + (done ? 'Meta superada' : 'Faltan ' + eur(falta) + extra) + '</span></div>' +
       '<div class="btn-row"><button class="btn sm" data-act="aportar" data-id="' + esc(o.id) + '">Aportar</button><button class="btn sm ghost" data-act="editObj" data-id="' + esc(o.id) + '">Editar</button></div></div>';
   }).join('') : empty('Aún no tienes objetivos. Toca + y crea el primero, por ejemplo el colchón de emergencia.');
-  return { html: '<div class="page">' + vh('Objetivos', 'Lo que quieres conseguir', 'objetivos') + body + '</div>' };
+  return { html: '<div class="page">' + vh('Objetivos', 'Lo que quieres conseguir', 'objetivos') + objTabs() + body + '</div>' };
 }
 
 function vAjustes() {
@@ -400,7 +473,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.4</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.5</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -409,7 +482,7 @@ function render() {
   const r = route(), v = VIEWS[r]();
   document.querySelectorAll('.nav-link').forEach(a => { if (a.dataset.r === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   const view = $('#view'); view.innerHTML = v.html; if (v.after) v.after();
-  const f = FAB[r], fab = $('#fab');
+  const f = fabOf(r), fab = $('#fab');
   if (f) { fab.hidden = false; fab.dataset.act = f[1]; $('#fabTx').textContent = f[0]; fab.setAttribute('aria-label', f[0]); } else fab.hidden = true;
   const names = { inicio: 'Inicio', gastos: 'Gastos', cartera: 'Cartera', seguimiento: 'Seguimiento', objetivos: 'Objetivos', ajustes: 'Ajustes' };
   document.title = names[r] + ' · Centex';
@@ -626,7 +699,7 @@ function doDelete(kind, id) {
   save(); closeSheet(); render(); toast(kind === 'all' ? 'Todo borrado' : kind === 'sec' ? 'Sección borrada' : 'Borrado');
 }
 const ACT = {
-  fab() { const f = FAB[route()]; if (f) ACT[f[1]](); },
+  fab() { const f = fabOf(route()); if (f) ACT[f[1]](); },
   addGasto() { sheetGasto(); }, addMes() { sheetMes(); }, addSeg() { sheetSeg(); }, addObj() { sheetObj(); },
   editGasto(el) { sheetGasto(el.dataset.id); }, editMes(el) { sheetMes(el.dataset.id); }, editSeg(el) { sheetSeg(el.dataset.id); },
   editObj(el) { sheetObj(el.dataset.id); }, aportar(el) { sheetAportar(el.dataset.id); }, precios() { sheetPrecios(); },
@@ -634,6 +707,7 @@ const ACT = {
   gMes(el) { ui.gMes = el.dataset.m; render(); },
   cRango(el) { ui.cRango = el.dataset.r; render(); },
   segTipo(el) { ui.segTipo = el.dataset.t; render(); },
+  objTab(el) { ui.objTab = el.dataset.t === 'esc' ? 'esc' : 'obj'; render(); },
   addRep() {
     const box = $('#repRows'), modo = (document.querySelector('input[name="repModo"]:checked') || {}).value;
     box.insertAdjacentHTML('beforeend', repRow('', '', modo)); const i = box.lastElementChild.querySelector('input'); if (i) i.focus();
@@ -679,6 +753,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'q') { ui.q = e.target.value; $('#gList').innerHTML = gListHTML(); }
+  else if (e.target.closest && e.target.closest('#escForm')) { readEsc(); renderEsc(); }
 });
 // Al cambiar el reparto de % a € (o al revés), convierte lo ya escrito usando el valor de la cartera.
 function convertRep(modo) {
