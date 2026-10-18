@@ -1,7 +1,7 @@
 'use strict';
 /* =====================================================================
    Centex · lógica de la app
-   Todo se guarda en este dispositivo (localStorage). Nada sale a internet.
+   Todo se guarda en este dispositivo (localStorage). Lo único que se pide a internet son los logos de empresas (desactivable en Ajustes).
    Estructura del archivo:
      1. utilidades      4. gráficos        7. eventos
      2. datos           5. pantallas       8. arranque
@@ -83,7 +83,7 @@ function ensureSecs(secs, seg) {
   });
   return secs;
 }
-const blank = () => ({ gastos: [], cartera: [], seg: [], secciones: SECS0(), objetivos: [], ajustes: { tema: 'auto', ultimaCopia: null } });
+const blank = () => ({ gastos: [], cartera: [], seg: [], secciones: SECS0(), objetivos: [], ajustes: { tema: 'auto', ultimaCopia: null, logos: true } });
 function norm(o) {
   const b = blank(); o = o && typeof o === 'object' ? o : {};
   const seg = Array.isArray(o.seg) ? o.seg : [];
@@ -109,7 +109,7 @@ function cleanData(o) {
   const s = (v, max = 200) => String(v == null ? '' : v).slice(0, max);
   const n = v => { const x = typeof v === 'number' ? v : num(v); return isFinite(x) ? x : null; };
   const arr = k => (Array.isArray(o[k]) ? o[k] : []);
-  const seg = arr('seg').filter(x => x && s(x.nombre) && s(x.grupo)).map(x => ({ id: s(x.id || uid(), 40), tipo: s(x.tipo, 40).trim() || 'accion', grupo: s(x.grupo, 60), nombre: s(x.nombre, 80), ticker: s(x.ticker, 30), fecha: isDate(x.fecha) ? x.fecha : null, precioEntrada: n(x.precioEntrada), precioActual: n(x.precioActual), motivo: s(x.motivo, 400) }));
+  const seg = arr('seg').filter(x => x && s(x.nombre) && s(x.grupo)).map(x => ({ id: s(x.id || uid(), 40), tipo: s(x.tipo, 40).trim() || 'accion', grupo: s(x.grupo, 60), nombre: s(x.nombre, 80), ticker: s(x.ticker, 30), web: webClean(x.web), fecha: isDate(x.fecha) ? x.fecha : null, precioEntrada: n(x.precioEntrada), precioActual: n(x.precioActual), motivo: s(x.motivo, 400) }));
   return {
     gastos: arr('gastos').filter(x => x && isDate(x.fecha) && n(x.cant) != null).map(x => ({ id: s(x.id || uid(), 40), fecha: x.fecha, desc: s(x.desc, 80), cat: CATS.includes(x.cat) ? x.cat : 'Otros', cant: n(x.cant), pago: x.pago === 'Efectivo' ? 'Efectivo' : 'Tarjeta' })),
     cartera: arr('cartera').filter(x => x && isMonth(x.mes)).map(x => { const o2 = { mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) }, rp = cleanRep(x.rep); if (rp) o2.rep = rp; return o2; }),
@@ -117,6 +117,75 @@ function cleanData(o) {
     objetivos: arr('objetivos').filter(x => x && s(x.nombre) && n(x.meta) > 0).map(x => ({ id: s(x.id || uid(), 40), nombre: s(x.nombre, 60), meta: n(x.meta), ahorrado: n(x.ahorrado) || 0, fecha: isDate(x.fecha) ? x.fecha : null }))
   };
 }
+
+/* ---------- 3b. logos de empresas ----------
+   Servicio: Ticker Logos (cdn.tickerlogos.com/<dominio>), sin cuenta. Hay que mostrar el crédito "Logos by AllInvestView".
+   Se descargan una vez y se guardan en este dispositivo (clave aparte: centex.logos). Si no hay logo, círculo con iniciales. */
+const LOGO_KEY = 'centex.logos', LOGO_MAX = 120, LOGO_MISS_MS = 7 * 864e5;
+const TICKER_DOM = { AAPL: 'apple.com', MSFT: 'microsoft.com', GOOGL: 'google.com', GOOG: 'google.com', AMZN: 'amazon.com', TSLA: 'tesla.com', NVDA: 'nvidia.com', META: 'meta.com', NFLX: 'netflix.com', QCOM: 'qualcomm.com', AMD: 'amd.com', INTC: 'intel.com', MNST: 'monsterbevcorp.com', KO: 'coca-colacompany.com', PEP: 'pepsico.com', BE: 'bloomenergy.com', HCA: 'hcahealthcare.com', DIS: 'disney.com', V: 'visa.com', MA: 'mastercard.com', JPM: 'jpmorganchase.com', WMT: 'walmart.com', NKE: 'nike.com', MCD: 'mcdonalds.com', SBUX: 'starbucks.com', ADBE: 'adobe.com', CRM: 'salesforce.com', ORCL: 'oracle.com', IBM: 'ibm.com', AVGO: 'broadcom.com', TSM: 'tsmc.com', ASML: 'asml.com', SAP: 'sap.com', ITX: 'inditex.com', SAN: 'santander.com', BBVA: 'bbva.com', TEF: 'telefonica.com', IBE: 'iberdrola.com', REP: 'repsol.com', AMS: 'amadeus.com', CABK: 'caixabank.com', PYPL: 'paypal.com', UBER: 'uber.com', PLTR: 'palantir.com', COIN: 'coinbase.com' };
+const NAME_DOM = { monster: 'monsterbevcorp.com', nextil: 'nextil.com', alphabet: 'google.com', facebook: 'meta.com', ishares: 'ishares.com', vanguard: 'vanguard.com', amundi: 'amundi.com', blackrock: 'blackrock.com', fidelity: 'fidelity.com', ssga: 'ssga.com', xtrackers: 'dws.com', invesco: 'invesco.com' };
+const SLUG_STOP = ['inc', 'corp', 'corporation', 'incorporated', 'co', 'company', 'sa', 'plc', 'ag', 'nv', 'se', 'ltd', 'group', 'holdings', 'holding', 'the', 'de', 'la', 'el', 'sl', 'sas'];
+const slugName = n => String(n || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(w => w && !SLUG_STOP.includes(w));
+function webClean(v) {
+  const t = String(v == null ? '' : v).trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').split(/[\/?#\s]/)[0].slice(0, 80);
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(t) ? t : '';
+}
+// Posibles dominios de una empresa, por orden de fiabilidad: web escrita a mano > ticker conocido > nombre.
+function logoCands(nombre, ticker, web) {
+  const out = [], add = d => { if (d && !out.includes(d)) out.push(d); };
+  add(webClean(web));
+  const tk = String(ticker || '').trim().toUpperCase().replace(/\..*$/, '');
+  if (/^[A-Z]{1,5}$/.test(tk)) add(TICKER_DOM[tk]);
+  const w = slugName(nombre), j = w.join('');
+  for (const k of Object.keys(NAME_DOM)) if (j.startsWith(k)) add(NAME_DOM[k]);
+  if (j.length >= 3) add(j + '.com');
+  return out.slice(0, 4);
+}
+let LC = {};
+try { LC = JSON.parse(localStorage.getItem(LOGO_KEY) || '{}') || {}; } catch (e) { LC = {}; }
+function lcSave() {
+  const ks = Object.keys(LC); if (ks.length > LOGO_MAX) ks.slice(0, ks.length - LOGO_MAX).forEach(k => { delete LC[k]; });
+  try { localStorage.setItem(LOGO_KEY, JSON.stringify(LC)); } catch (e) { /* sin sitio: se vuelve a pedir */ }
+}
+const initials = n => { const w = String(n || '?').trim().split(/\s+/); return ((w[0] || '?')[0] + (w.length > 1 ? w[1][0] : '')).toUpperCase(); };
+const hueOf = n => { let h = 0; for (const c of String(n)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+function logoHTML(nombre, cands, small) {
+  return '<span class="lg' + (small ? ' sm' : '') + '" aria-hidden="true" style="--h:' + hueOf(nombre) + '"' + (cands.length ? ' data-lg="' + esc(cands.join(',')) + '"' : '') + '>' + esc(initials(nombre)) + '</span>';
+}
+const posLogo = p => logoHTML(p.nombre, logoCands(p.nombre, p.ticker, p.web));
+function applyLogo(el) {
+  if (!el.dataset.lg || el.classList.contains('has')) return;
+  for (const d of el.dataset.lg.split(',')) {
+    const v = LC[d];
+    if (typeof v === 'string') { el.classList.add('has'); el.textContent = ''; const im = new Image(); im.alt = ''; im.src = v; el.appendChild(im); return; }
+    if (typeof v === 'number' && Date.now() + v < LOGO_MISS_MS) continue;   // sin logo conocido (negativo = hora del fallo)
+    if (!LQ.failed.has(d)) { lqPush(d); return; }
+  }
+}
+const LQ = { q: [], run: false, failed: new Set(), until: 0 };
+function lqPush(d) { if (!LQ.q.includes(d)) LQ.q.push(d); if (!LQ.run) { LQ.run = true; setTimeout(lqPump, 50); } }
+async function lqPump() {
+  while (LQ.q.length && D.ajustes.logos) {
+    if (Date.now() < LQ.until) break;
+    const d = LQ.q.shift();
+    try {
+      const r = await fetch('https://cdn.tickerlogos.com/' + encodeURIComponent(d), { referrerPolicy: 'origin' });
+      if (r.status === 429) { LQ.until = Date.now() + 60000; LQ.failed.add(d); }
+      else if (r.status === 404) LC[d] = -Date.now();
+      else if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) {
+        const b = await r.blob();
+        if (b.size > 60000) LC[d] = -Date.now();
+        else LC[d] = await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(b); });
+      } else LQ.failed.add(d);
+      lcSave();
+    } catch (e) { LQ.failed.add(d); }   // sin conexión: se reintenta al reabrir la app
+    document.querySelectorAll('.lg[data-lg]:not(.has)').forEach(applyLogo);
+    await new Promise(ok => setTimeout(ok, 160));
+  }
+  LQ.run = false;
+}
+function hydrateLogos() { if (D.ajustes.logos) document.querySelectorAll('.lg[data-lg]').forEach(applyLogo); }
+const CREDIT = '<a href="https://www.allinvestview.com/tools/ticker-logos/" target="_blank" rel="noopener">Logos by AllInvestView</a>';
 
 /* ---------- 3. cálculos ---------- */
 function monthRange() {
@@ -264,7 +333,7 @@ function vInicio() {
   const hoy = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
   if (!has) {
     return { html: '<div class="page">' + vh('Bienvenido', hoy, 'inicio') +
-      '<div class="card welcome"><h2>Tu dinero, en un solo sitio</h2><p>Apunta tus gastos, sigue tu cartera y marca objetivos de ahorro. Todo se guarda en este dispositivo y nadie más lo ve.</p>' +
+      '<div class="card welcome"><h2>Tu dinero, en un solo sitio</h2><p>Apunta tus gastos, sigue tu cartera y marca objetivos de ahorro. Tus datos se guardan en este dispositivo y nadie más los ve. Solo los logos de empresas se piden online (puedes quitarlos en Ajustes).</p>' +
       '<div class="btn-row"><button class="btn" data-act="addGasto">' + icon('plus') + 'Apuntar mi primer gasto</button><button class="btn ghost" data-act="pickFile">Importar mis datos</button></div></div></div>' };
   }
   const cur = mk(todayISO()), prev = addM(cur, -1), day = +todayISO().slice(8, 10);
@@ -391,7 +460,7 @@ function vCartera() {
   const lastRep = all.slice().reverse().find(r => repartoDe(r)), rp = lastRep ? repartoDe(lastRep) : null;
   const repCard = rp ? '<div class="card"><div class="card-head"><h2>En qué está invertido</h2></div><p class="sub" style="margin:0">Según ' + esc(mLabel(lastRep.mes, true)) + '</p>' +
     '<div class="splitbar" aria-hidden="true">' + rp.map((i, k) => '<span style="width:' + Math.max(i.pct, 0) + '%;background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></span>').join('') + '</div>' +
-    '<div class="splitleg">' + rp.map((i, k) => '<div><span><i class="dot" style="background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></i>' + esc(i.n) + '</span><span class="num">' + eur(i.imp) + ' <em>' + i.pct.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %</em></span></div>').join('') + '</div></div>' : '';
+    '<div class="splitleg">' + rp.map((i, k) => { const fc = i.resto ? [] : logoCands(i.n, '', '').filter(d => Object.values(NAME_DOM).includes(d)); return '<div><span>' + (fc.length ? logoHTML(i.n, fc, true) : '<i class="dot" style="background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></i>') + esc(i.n) + '</span><span class="num">' + eur(i.imp) + ' <em>' + i.pct.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %</em></span></div>'; }).join('') + (D.ajustes.logos && rp.some(i => !i.resto && logoCands(i.n, '', '').some(d => Object.values(NAME_DOM).includes(d))) ? '<p class="credit">' + CREDIT + '</p>' : '') + '</div></div>' : '';
   return { html: '<div class="page">' + vh('Cartera', 'Tu cartera real en MyInvestor', 'cartera') + sum + chips + per +
     '<div class="card"><div class="card-head"><h2>Evolución</h2></div><div class="legend"><span><i style="background:var(--s1)"></i>Valor de la cartera</span><span><i style="background:var(--s2)"></i>Total aportado</span></div><div class="chart" id="chCartera"></div></div>' + repCard + list + '</div>',
     after() { drawLine($('#chCartera'), rows); } };
@@ -408,9 +477,9 @@ function vSeg() {
   const sum = items.length ? '<p style="font-size:14px;color:var(--ink2);font-weight:600;padding:0 2px">' + items.length + ' en seguimiento' + (avg != null ? ' · rentabilidad media <span class="' + (avg >= 0 ? 'dn-t' : 'up-t') + '">' + (avg >= 0 ? '▲ ' : '▼ ') + pct(avg) + '</span>' : ' · sin precios actuales todavía') + '</p>' : '';
   const body = items.length ? '<div class="card">' + groups.map(g => '<div class="grp">' + esc(g) + '</div><div class="list">' + items.filter(p => p.grupo === g).map(p => {
     const r = rentPos(p);
-    return '<button class="item plain" data-act="editSeg" data-id="' + esc(p.id) + '"><span class="t"><b>' + esc(p.nombre) + '</b><small>' + esc(p.ticker || '') + (p.precioEntrada != null ? ' · entrada ' + eur(p.precioEntrada) : '') + '</small></span><span class="r">' + (p.precioActual != null ? eur(p.precioActual) : '<small>sin precio</small>') + (r != null ? '<small class="' + (r >= 0 ? 'dn-t' : 'up-t') + '">' + (r >= 0 ? '▲ ' : '▼ ') + pct(r) + '</small>' : '') + '</span></button>';
+    return '<button class="item plain" data-act="editSeg" data-id="' + esc(p.id) + '">' + posLogo(p) + '<span class="t"><b>' + esc(p.nombre) + '</b><small>' + esc(p.ticker || '') + (p.precioEntrada != null ? ' · entrada ' + eur(p.precioEntrada) : '') + '</small></span><span class="r">' + (p.precioActual != null ? eur(p.precioActual) : '<small>sin precio</small>') + (r != null ? '<small class="' + (r >= 0 ? 'dn-t' : 'up-t') + '">' + (r >= 0 ? '▲ ' : '▼ ') + pct(r) + '</small>' : '') + '</span></button>';
   }).join('') + '</div>').join('') + '</div>' : empty('Aún no hay nada en «' + esc(secName(tipo)) + '». Toca + para añadir la primera posición.');
-  return { html: '<div class="page">' + vh('Seguimiento', 'Paper trading: sin dinero real', 'seguimiento') + chips + head + sum + body + '</div>' };
+  return { html: '<div class="page">' + vh('Seguimiento', 'Paper trading: sin dinero real', 'seguimiento') + chips + head + sum + body + (items.length && D.ajustes.logos ? '<p class="credit">' + CREDIT + '</p>' : '') + '</div>' };
 }
 
 /* Inmueble: simulación mes a mes. Devuelve lo que pones, lo que te sobra cada año, lo que te queda al vender y la TIR. */
@@ -585,6 +654,7 @@ function vAjustes() {
   const u = D.ajustes.ultimaCopia;
   return { html: '<div class="page"><div class="vh"><div><h1>Ajustes</h1><p class="sub">Apariencia y tus datos</p></div></div>' +
     '<div class="card set"><div class="setrow"><div><b>Apariencia</b><p>Automático sigue el modo de tu móvil.</p></div><div class="seg" role="group" aria-label="Tema">' + [['auto', 'Auto'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(a => '<button data-act="tema" data-v="' + a[0] + '" aria-pressed="' + (t === a[0]) + '">' + a[1] + '</button>').join('') + '</div></div></div>' +
+    '<div class="card set"><div class="setrow"><div><b>Logos de empresas</b><p>Los pide a Ticker Logos (así sabe qué empresas sigues, nunca tus importes) y los guarda aquí. ' + CREDIT + '</p></div><div class="seg" role="group" aria-label="Logos">' + [['1', 'Sí'], ['0', 'No']].map(a => '<button data-act="logos" data-v="' + a[0] + '" aria-pressed="' + ((D.ajustes.logos !== false) === (a[0] === '1')) + '">' + a[1] + '</button>').join('') + '</div></div></div>' +
     '<div class="card set"><h2>Tus datos</h2><p class="sub" style="margin-bottom:6px">Se guardan solo en este dispositivo. Si borras los datos del navegador o cambias de móvil, se pierden: haz copias de vez en cuando.</p>' +
     '<div class="setrow"><div><b>Copia de seguridad</b><p>' + (u ? 'Última copia: ' + esc(dLabel(u)) : 'Aún no has hecho ninguna.') + '</p></div><button class="btn sm" data-act="export">Descargar</button></div>' +
     '<div class="setrow"><div><b>Restaurar o importar</b><p>Desde un archivo de copia de Centex.</p></div><button class="btn sm ghost" data-act="pickFile">Elegir archivo</button></div>' +
@@ -592,7 +662,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.6</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.7</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -601,6 +671,7 @@ function render() {
   const r = route(), v = VIEWS[r]();
   document.querySelectorAll('.nav-link').forEach(a => { if (a.dataset.r === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   const view = $('#view'); view.innerHTML = v.html; if (v.after) v.after();
+  hydrateLogos();
   const f = fabOf(r), fab = $('#fab');
   if (f) { fab.hidden = false; fab.dataset.act = f[1]; $('#fabTx').textContent = f[0]; fab.setAttribute('aria-label', f[0]); } else fab.hidden = true;
   const names = { inicio: 'Inicio', gastos: 'Gastos', cartera: 'Cartera', seguimiento: 'Seguimiento', objetivos: 'Objetivos', ajustes: 'Ajustes' };
@@ -685,7 +756,7 @@ function sheetMes(mes) {
 
 function sheetSeg(id) {
   const p = id ? D.seg.find(x => x.id === id) : null;
-  const v = p || { tipo: ui.segTipo, grupo: '', nombre: '', ticker: '', fecha: '', precioEntrada: '', precioActual: '', motivo: '' };
+  const v = p || { tipo: ui.segTipo, grupo: '', nombre: '', ticker: '', fecha: '', precioEntrada: '', precioActual: '', motivo: '', web: '' };
   const groups = [...new Set(D.seg.map(x => x.grupo))];
   openSheet(p ? 'Editar posición' : 'Añadir al seguimiento',
     '<div class="form"><div class="fld"><span class="lb">Sección</span><div class="opts" role="radiogroup" aria-label="Sección">' + D.secciones.map(x => opt('tipo', x.id, v.tipo === x.id, esc(x.nombre))).join('') + '</div></div>' +
@@ -693,13 +764,14 @@ function sheetSeg(id) {
     '<div class="row2"><div class="fld"><label for="sGrupo">Sector o tipo</label><input id="sGrupo" name="grupo" list="dlGrupos" maxlength="60" autocomplete="off" placeholder="Tecnología, Value…" value="' + esc(v.grupo) + '"><datalist id="dlGrupos">' + groups.map(g => '<option value="' + esc(g) + '">').join('') + '</datalist></div><div class="fld"><label for="sTicker">Ticker o ISIN</label><input id="sTicker" name="ticker" maxlength="30" autocomplete="off" value="' + esc(v.ticker) + '"></div></div>' +
     '<div class="row2"><div class="fld"><label for="sEnt">Precio de entrada (€)</label><input id="sEnt" name="pent" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioEntrada) + '"></div><div class="fld"><label for="sAct">Precio actual (€)</label><input id="sAct" name="pact" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioActual) + '"></div></div>' +
     '<div class="fld"><label for="sFecha">Fecha de entrada</label><input id="sFecha" name="fecha" type="date" value="' + esc(v.fecha || '') + '"></div>' +
+    '<div class="fld"><label for="sWeb">Web de la empresa (opcional)</label><input id="sWeb" name="web" maxlength="80" autocomplete="off" inputmode="url" placeholder="qualcomm.com" value="' + esc(v.web || '') + '"><span class="help">Solo sirve para encontrar su logo. Si sale bien sin ponerla, déjala vacía.</span></div>' +
     '<div class="fld"><label for="sMotivo">Motivo corto</label><input id="sMotivo" name="motivo" maxlength="400" autocomplete="off" value="' + esc(v.motivo) + '"></div>' +
     actions(p ? delBtn('seg', id) : '', p ? 'Guardar' : 'Añadir') + '</div>',
     fd => {
       const nombre = String(fd.get('nombre') || '').trim(), grupo = String(fd.get('grupo') || '').trim();
       if (!nombre || !grupo) return 'Pon al menos el nombre y el sector o tipo.';
       const f = fd.get('fecha');
-      const o = { id: p ? p.id : uid(), tipo: D.secciones.some(x => x.id === fd.get('tipo')) ? fd.get('tipo') : D.secciones[0].id, grupo: grupo.slice(0, 60), nombre: nombre.slice(0, 80), ticker: String(fd.get('ticker') || '').trim().slice(0, 30), fecha: isDate(f) ? f : null, precioEntrada: num(fd.get('pent')), precioActual: num(fd.get('pact')), motivo: String(fd.get('motivo') || '').trim().slice(0, 400) };
+      const o = { id: p ? p.id : uid(), tipo: D.secciones.some(x => x.id === fd.get('tipo')) ? fd.get('tipo') : D.secciones[0].id, grupo: grupo.slice(0, 60), nombre: nombre.slice(0, 80), ticker: String(fd.get('ticker') || '').trim().slice(0, 30), web: webClean(fd.get('web')), fecha: isDate(f) ? f : null, precioEntrada: num(fd.get('pent')), precioActual: num(fd.get('pact')), motivo: String(fd.get('motivo') || '').trim().slice(0, 400) };
       if (p) D.seg[D.seg.indexOf(p)] = o; else D.seg.push(o);
       ui.segTipo = o.tipo; save(); render(); toast(p ? 'Posición actualizada' : 'Añadido al seguimiento');
     });
@@ -834,6 +906,7 @@ const ACT = {
   },
   delRep(el) { const row = el.closest('.reprow'); if (row) row.remove(); },
   addSec() { sheetSecs(); setTimeout(() => { const i = $('#scNueva'); if (i) i.focus(); }, 60); }, editSecs() { sheetSecs(); },
+  logos(el) { D.ajustes.logos = el.dataset.v === '1'; save(); render(); },
   tema(el) { D.ajustes.tema = el.dataset.v; save(); applyTheme(); render(); },
   pickFile() { $('#fileIn').value = ''; $('#fileIn').click(); },
   export() {
