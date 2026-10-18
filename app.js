@@ -83,12 +83,29 @@ function ensureSecs(secs, seg) {
   });
   return secs;
 }
-const blank = () => ({ gastos: [], cartera: [], seg: [], secciones: SECS0(), objetivos: [], ajustes: { tema: 'auto', ultimaCopia: null, logos: true } });
+// Carteras (una por plataforma). Cada mes apuntado lleva el id de su cartera en «c». Datos antiguos: todo cae en «Principal».
+const CART0 = () => [{ id: 'principal', nombre: 'Principal' }];
+function cleanCarts(a) {
+  const seen = new Set(), ok = [];
+  (Array.isArray(a) ? a : []).forEach(x => {
+    const id = x && typeof x.id === 'string' ? x.id.slice(0, 40) : '', nombre = x ? String(x.nombre == null ? '' : x.nombre).trim().slice(0, 30) : '';
+    if (id && nombre && !seen.has(id)) { seen.add(id); ok.push({ id, nombre }); }
+  });
+  return ok.length ? ok : CART0();
+}
+function ensureCarts(carts, rows) {
+  rows.forEach(r => {
+    if (!r.c) r.c = carts[0].id;
+    if (!carts.some(x => x.id === r.c)) carts.push({ id: r.c, nombre: 'Cartera ' + (carts.length + 1) });
+  });
+  return carts;
+}
+const blank = () => ({ gastos: [], cartera: [], carteras: CART0(), seg: [], secciones: SECS0(), objetivos: [], ajustes: { tema: 'auto', ultimaCopia: null, logos: true } });
 function norm(o) {
   const b = blank(); o = o && typeof o === 'object' ? o : {};
-  const seg = Array.isArray(o.seg) ? o.seg : [];
+  const seg = Array.isArray(o.seg) ? o.seg : [], cartera = Array.isArray(o.cartera) ? o.cartera : [];
   return {
-    gastos: Array.isArray(o.gastos) ? o.gastos : [], cartera: Array.isArray(o.cartera) ? o.cartera : [],
+    gastos: Array.isArray(o.gastos) ? o.gastos : [], cartera, carteras: ensureCarts(cleanCarts(o.carteras), cartera),
     seg, secciones: ensureSecs(cleanSecs(o.secciones), seg), objetivos: Array.isArray(o.objetivos) ? o.objetivos : [],
     ajustes: Object.assign(b.ajustes, o.ajustes || {})
   };
@@ -110,9 +127,10 @@ function cleanData(o) {
   const n = v => { const x = typeof v === 'number' ? v : num(v); return isFinite(x) ? x : null; };
   const arr = k => (Array.isArray(o[k]) ? o[k] : []);
   const seg = arr('seg').filter(x => x && s(x.nombre) && s(x.grupo)).map(x => ({ id: s(x.id || uid(), 40), tipo: s(x.tipo, 40).trim() || 'accion', grupo: s(x.grupo, 60), nombre: s(x.nombre, 80), ticker: s(x.ticker, 30), web: webClean(x.web), fecha: isDate(x.fecha) ? x.fecha : null, precioEntrada: n(x.precioEntrada), precioActual: n(x.precioActual), motivo: s(x.motivo, 400) }));
+  const cartera = arr('cartera').filter(x => x && isMonth(x.mes)).map(x => { const o2 = { c: s(x.c, 40), mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) }, rp = cleanRep(x.rep); if (rp) o2.rep = rp; return o2; });
   return {
     gastos: arr('gastos').filter(x => x && isDate(x.fecha) && n(x.cant) != null).map(x => ({ id: s(x.id || uid(), 40), fecha: x.fecha, desc: s(x.desc, 80), cat: CATS.includes(x.cat) ? x.cat : 'Otros', cant: n(x.cant), pago: x.pago === 'Efectivo' ? 'Efectivo' : 'Tarjeta' })),
-    cartera: arr('cartera').filter(x => x && isMonth(x.mes)).map(x => { const o2 = { mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) }, rp = cleanRep(x.rep); if (rp) o2.rep = rp; return o2; }),
+    cartera, carteras: ensureCarts(cleanCarts(o.carteras), cartera),
     seg, secciones: ensureSecs(cleanSecs(o.secciones), seg),
     objetivos: arr('objetivos').filter(x => x && s(x.nombre) && n(x.meta) > 0).map(x => ({ id: s(x.id || uid(), 40), nombre: s(x.nombre, 60), meta: n(x.meta), ahorrado: n(x.ahorrado) || 0, fecha: isDate(x.fecha) ? x.fecha : null }))
   };
@@ -196,12 +214,32 @@ function monthRange() {
 }
 const totMonth = k => D.gastos.filter(x => mk(x.fecha) === k).reduce((s, x) => s + x.cant, 0);
 const totCat = (k, c) => D.gastos.filter(x => mk(x.fecha) === k && x.cat === c).reduce((s, x) => s + x.cant, 0);
-function carteraRows() {
+// Filas mes a mes de UNA cartera (lista de meses suyos).
+function rowsOne(list) {
   let acum = 0;
-  return D.cartera.slice().sort((a, b) => (a.mes < b.mes ? -1 : 1)).map(r => {
+  return list.slice().sort((a, b) => (a.mes < b.mes ? -1 : 1)).map(r => {
     acum += r.aportado || 0;
     const valor = r.valor == null ? null : r.valor, gan = valor == null ? null : valor - acum;
     return { mes: r.mes, ap: r.aportado || 0, acum, valor, gan, rent: valor == null || acum <= 0 ? null : (gan / acum) * 100, rep: r.rep || null };
+  });
+}
+// cid = id de una cartera, o nada / 'total' para la suma de todas. En el total, si una cartera no tiene dato un mes, se arrastra su último valor.
+function carteraRows(cid) {
+  const ids = D.carteras.map(c => c.id);
+  if (cid && ids.includes(cid)) return rowsOne(D.cartera.filter(x => x.c === cid));
+  if (ids.length === 1) return rowsOne(D.cartera);
+  const per = ids.map(id => rowsOne(D.cartera.filter(x => x.c === id)));
+  const months = [...new Set(per.flatMap(p => p.map(r => r.mes)))].sort();
+  return months.map(mes => {
+    let ap = 0, acum = 0, valor = null;
+    per.forEach(p => {
+      const r = p.find(x => x.mes === mes); if (r) ap += r.ap;
+      const upto = p.filter(x => x.mes <= mes), last = upto[upto.length - 1];
+      if (last) acum += last.acum;
+      const lv = upto.filter(x => x.valor != null).pop(); if (lv) valor = (valor || 0) + lv.valor;
+    });
+    const gan = valor == null ? null : valor - acum;
+    return { mes, ap, acum, valor, gan, rent: valor == null || acum <= 0 ? null : (gan / acum) * 100, rep: null };
   });
 }
 // Reparto de un mes en € y en %, sea cual sea el modo en que se apuntó. Lo no apuntado sale como «Sin asignar».
@@ -308,7 +346,7 @@ function drawProj(el, rows) {
 }
 
 /* ---------- 5. pantallas ---------- */
-const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null, cRango: 'todo', objTab: 'obj', sim: null, escTipo: 'inv', inm: null };
+const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null, cRango: 'todo', cart: 'total', objTab: 'obj', sim: null, escTipo: 'inv', inm: null };
 // Escenarios de inmueble: tiene muchos campos, así que se recuerda lo último que pusiste (aparte de tus datos y copias).
 const INM0 = { precio: '150000', impCompra: '4', otros: '2500', reforma: '0', ltv: '80', tipo: '3', plazo: '25', alquiler: '800', vacio: '1', gestion: '0', subida: '2', comunidad: '40', ibi: '300', seguro: '150', mant: '400', anios: '15', revalor: '2', gastosVenta: '4', impAlq: '20', impGan: '19', alt: '7' };
 try {
@@ -433,8 +471,25 @@ function vGastos() {
 }
 
 const C_RANGOS = [['todo', 'Todo'], ['12', 'Últimos 12 meses'], ['6', 'Últimos 6 meses'], ['3', 'Últimos 3 meses']];
+// Reparto del total: suma lo último apuntado de cada cartera; lo de una cartera sin reparto cuenta como «Sin asignar».
+function repTotal() {
+  const m = new Map(); let tot = 0, any = false;
+  const add = (n, imp, resto) => { const e = m.get(n) || { n, imp: 0, resto }; e.imp += imp; m.set(n, e); tot += imp; };
+  D.carteras.forEach(c => {
+    const rs = carteraRows(c.id), lr = rs.slice().reverse().find(r => repartoDe(r)), lv = rs.filter(r => r.valor != null).pop();
+    if (lr) { any = true; repartoDe(lr).forEach(i => add(i.resto ? 'Sin asignar' : i.n, i.imp, !!i.resto)); const rest = lv && lv !== lr ? lv.valor - lr.valor : 0; if (rest > 0.005) add('Sin asignar', rest, true); }
+    else if (lv && lv.valor > 0) add('Sin asignar', lv.valor, true);
+  });
+  if (!any || !(tot > 0)) return null;
+  return [...m.values()].sort((a, b) => (a.resto ? 1 : 0) - (b.resto ? 1 : 0) || b.imp - a.imp).map(i => Object.assign(i, { pct: (i.imp / tot) * 100 }));
+}
 function vCartera() {
-  const all = carteraRows(), cr = all.filter(r => r.valor != null), lc = cr[cr.length - 1];
+  const cids = D.carteras.map(c => c.id), multi = cids.length > 1;
+  if (!multi) ui.cart = cids[0]; else if (ui.cart !== 'total' && !cids.includes(ui.cart)) ui.cart = 'total';
+  const isTot = multi && ui.cart === 'total', cName = (D.carteras.find(c => c.id === ui.cart) || {}).nombre || '';
+  const cartChips = multi ? '<div class="chips" role="group" aria-label="Cartera">' + [['total', 'Total']].concat(D.carteras.map(c => [c.id, c.nombre])).map(c => '<button class="chip" style="text-transform:none" data-act="cCart" data-c="' + esc(c[0]) + '" aria-pressed="' + (ui.cart === c[0]) + '">' + esc(c[1]) + '</button>').join('') + '<button class="chip" style="text-transform:none" data-act="addCart" aria-label="Nueva cartera">+ Nueva</button></div>' : '';
+  const cartHead = '<div style="display:flex;justify-content:flex-end"><button class="btn sm ghost" data-act="' + (multi ? 'editCarts' : 'addCart') + '">' + (multi ? 'Carteras' : '+ Añadir otra cartera') + '</button></div>';
+  const all = carteraRows(isTot ? 'total' : ui.cart), cr = all.filter(r => r.valor != null), lc = cr[cr.length - 1];
   // Filtro por periodo: se cuenta hacia atrás desde el último mes apuntado.
   if (!C_RANGOS.some(c => c[0] === ui.cRango)) ui.cRango = 'todo';
   const nR = ui.cRango === 'todo' ? 0 : +ui.cRango;
@@ -455,13 +510,16 @@ function vCartera() {
   const sum = lc ? '<div class="card stat"><div class="l">Valor actual · ' + esc(mLabel(lc.mes, true)) + '</div><div class="v">' + eur(lc.valor) + '</div>' + deltaPill(lc.gan, lc.rent) +
     '<div class="d">Has aportado ' + eur(lc.acum) + ' en total.</div></div>' : '';
   const list = rows.length ? '<div class="card"><div class="list">' + rows.slice().reverse().map(r =>
-    '<button class="item plain" data-act="editMes" data-id="' + r.mes + '"><span class="t"><b>' + esc(mLabel(r.mes, true)) + '</b><small>Aportado ' + eur(r.ap) + ' · Total ' + eur(r.acum) + '</small></span><span class="r">' + (r.valor == null ? '—' : eur(r.valor)) + (r.gan == null ? '' : '<small class="' + (r.gan >= 0 ? 'dn-t' : 'up-t') + '">' + (r.gan >= 0 ? '▲ ' : '▼ ') + sgn(r.gan) + eur(Math.abs(r.gan)) + '</small>') + '</span></button>').join('') + '</div></div>' : empty('Aún no hay meses apuntados. Una vez al mes: lo que aportaste y lo que marca MyInvestor.');
+    '<' + (isTot ? 'div' : 'button') + ' class="item plain"' + (isTot ? '' : ' data-act="editMes" data-id="' + r.mes + '" data-c="' + esc(ui.cart) + '"') + '><span class="t"><b>' + esc(mLabel(r.mes, true)) + '</b><small>Aportado ' + eur(r.ap) + ' · Total ' + eur(r.acum) + '</small></span><span class="r">' + (r.valor == null ? '—' : eur(r.valor)) + (r.gan == null ? '' : '<small class="' + (r.gan >= 0 ? 'dn-t' : 'up-t') + '">' + (r.gan >= 0 ? '▲ ' : '▼ ') + sgn(r.gan) + eur(Math.abs(r.gan)) + '</small>') + '</span></' + (isTot ? 'div' : 'button') + '>').join('') + '</div>' + (isTot ? '<p class="sub" style="margin:8px 2px 0">Suma de todas tus carteras. Para apuntar o corregir un mes, entra en su cartera.</p>' : '') + '</div>' : empty('Aún no hay meses apuntados. Una vez al mes: lo que aportaste y lo que marca tu plataforma.');
+  // Total: cuánto hay en cada cartera
+  const porC = isTot ? D.carteras.map(c => { const rs = carteraRows(c.id).filter(r => r.valor != null); return { c, l: rs[rs.length - 1] }; }) : [], totV = porC.reduce((a, x) => a + (x.l ? x.l.valor : 0), 0);
+  const porCard = isTot ? '<div class="card"><div class="card-head"><h2>Por cartera</h2></div><div class="list">' + porC.map(x => '<button class="item plain" data-act="cCart" data-c="' + esc(x.c.id) + '"><span class="t"><b>' + esc(x.c.nombre) + '</b><small>' + (x.l ? 'Aportado ' + eur(x.l.acum) + ' · ' + (totV > 0 ? (x.l.valor / totV * 100).toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' % del total' : '') : 'Sin meses apuntados') + '</small></span><span class="r">' + (x.l ? eur(x.l.valor) + (x.l.gan == null ? '' : '<small class="' + (x.l.gan >= 0 ? 'dn-t' : 'up-t') + '">' + (x.l.gan >= 0 ? '▲ ' : '▼ ') + sgn(x.l.gan) + eur(Math.abs(x.l.gan)) + '</small>') : '—') + '</span></button>').join('') + '</div></div>' : '';
   // En qué está invertido: el reparto del último mes que lo tenga apuntado.
-  const lastRep = all.slice().reverse().find(r => repartoDe(r)), rp = lastRep ? repartoDe(lastRep) : null;
-  const repCard = rp ? '<div class="card"><div class="card-head"><h2>En qué está invertido</h2></div><p class="sub" style="margin:0">Según ' + esc(mLabel(lastRep.mes, true)) + '</p>' +
+  const lastRep = isTot ? null : all.slice().reverse().find(r => repartoDe(r)), rp = isTot ? repTotal() : lastRep ? repartoDe(lastRep) : null;
+  const repCard = rp ? '<div class="card"><div class="card-head"><h2>En qué está invertido</h2></div><p class="sub" style="margin:0">' + (isTot ? 'Según el último reparto apuntado de cada cartera' : 'Según ' + esc(mLabel(lastRep.mes, true))) + '</p>' +
     '<div class="splitbar" aria-hidden="true">' + rp.map((i, k) => '<span style="width:' + Math.max(i.pct, 0) + '%;background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></span>').join('') + '</div>' +
     '<div class="splitleg">' + rp.map((i, k) => { const fc = i.resto ? [] : logoCands(i.n, '', '').filter(d => Object.values(NAME_DOM).includes(d)); return '<div><span>' + (fc.length ? logoHTML(i.n, fc, true) : '<i class="dot" style="background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></i>') + esc(i.n) + '</span><span class="num">' + eur(i.imp) + ' <em>' + i.pct.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %</em></span></div>'; }).join('') + (D.ajustes.logos && rp.some(i => !i.resto && logoCands(i.n, '', '').some(d => Object.values(NAME_DOM).includes(d))) ? '<p class="credit">' + CREDIT + '</p>' : '') + '</div></div>' : '';
-  return { html: '<div class="page">' + vh('Cartera', 'Tu cartera real en MyInvestor', 'cartera') + sum + chips + per +
+  return { html: '<div class="page">' + vh('Cartera', multi ? 'Tus carteras, plataforma por plataforma' : 'Lo que tienes invertido, mes a mes', 'cartera') + cartChips + cartHead + sum + porCard + chips + per +
     '<div class="card"><div class="card-head"><h2>Evolución</h2></div><div class="legend"><span><i style="background:var(--s1)"></i>Valor de la cartera</span><span><i style="background:var(--s2)"></i>Total aportado</span></div><div class="chart" id="chCartera"></div></div>' + repCard + list + '</div>',
     after() { drawLine($('#chCartera'), rows); } };
 }
@@ -662,7 +720,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.7.1</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.8</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -712,16 +770,18 @@ function sheetGasto(id) {
 }
 
 const repRow = (n, v, modo) => '<div class="reprow"><input name="rn" list="dlRep" maxlength="40" autocomplete="off" placeholder="Fondo o activo" aria-label="Nombre del fondo o activo" value="' + esc(n) + '"><input name="rv" inputmode="decimal" autocomplete="off" placeholder="' + (modo === 'eur' ? '€' : '%') + '" aria-label="' + (modo === 'eur' ? 'Importe en euros' : 'Porcentaje') + '" value="' + fmtIn(v) + '"><button type="button" class="btn ghost" data-act="delRep" aria-label="Quitar">' + icon('x') + '</button></div>';
-function sheetMes(mes) {
-  const r = mes ? D.cartera.find(x => x.mes === mes) : null;
+function sheetMes(mes, cid) {
+  const multi = D.carteras.length > 1, r = mes ? D.cartera.find(x => x.mes === mes && x.c === (cid || D.carteras[0].id)) : null;
+  const c0 = r ? r.c : (D.carteras.some(c => c.id === ui.cart) ? ui.cart : D.carteras[0].id);
   const v = r || { mes: mk(todayISO()), aportado: '', valor: '' };
   // Reparto: al editar, el de ese mes; en un mes nuevo, los mismos fondos del último mes que lo tenga (con sus % si estaba en %).
-  const prev = carteraRows().filter(x => x.rep && x.mes !== (r ? r.mes : '')).pop();
+  const prev = carteraRows(c0).filter(x => x.rep && x.mes !== (r ? r.mes : '')).pop();
   const vacio = { modo: 'pct', items: [{ n: '', v: '' }, { n: '', v: '' }] };
   const base = r ? (r.rep || vacio) : prev ? { modo: prev.rep.modo, items: prev.rep.items.map(i => ({ n: i.n, v: prev.rep.modo === 'pct' ? i.v : '' })) } : vacio;
   const names = [...new Set(D.cartera.flatMap(x => (x.rep && x.rep.items || []).map(i => i.n)).concat(D.seg.filter(p => p.tipo === 'fondo').map(p => p.nombre)))];
   openSheet(r ? 'Editar mes' : 'Apuntar un mes',
-    '<div class="form"><p class="sub" style="margin:0">Una vez al mes: lo que aportaste y el valor que marca MyInvestor.</p>' +
+    '<div class="form"><p class="sub" style="margin:0">Una vez al mes: lo que aportaste y el valor que marca tu plataforma.</p>' +
+    (multi ? (r ? '<input type="hidden" name="cart" value="' + esc(c0) + '"><p style="margin:0;font-weight:700">Cartera: ' + esc(D.carteras.find(c => c.id === c0).nombre) + '</p>' : '<div class="fld"><span class="lb">Cartera</span><div class="opts" role="radiogroup" aria-label="Cartera">' + D.carteras.map(c => opt('cart', c.id, c.id === c0, esc(c.nombre))).join('') + '</div></div>') : '<input type="hidden" name="cart" value="' + esc(c0) + '">') +
     '<div class="fld"><label for="cMes">Mes</label><input id="cMes" name="mes" type="month" placeholder="2026-10" value="' + v.mes + '"' + (r ? ' readonly' : '') + '></div>' +
     '<div class="row2"><div class="fld"><label for="cAp">Aportado ese mes (€)</label><input id="cAp" name="ap" inputmode="decimal" autocomplete="off" placeholder="0" value="' + (r ? fmtIn(v.aportado) : '') + '"></div><div class="fld"><label for="cVal">Valor de la cartera (€)</label><input id="cVal" name="val" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (r ? fmtIn(v.valor) : '') + '"></div></div>' +
     '<div class="fld"><span class="lb">¿En qué está invertido? (opcional)</span><div class="opts" role="radiogroup" aria-label="Cómo apuntar el reparto">' + opt('repModo', 'pct', base.modo !== 'eur', 'En %') + opt('repModo', 'eur', base.modo === 'eur', 'En €') + '</div>' +
@@ -729,9 +789,10 @@ function sheetMes(mes) {
     '<datalist id="dlRep">' + names.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>' +
     '<button type="button" class="btn sm ghost" data-act="addRep" style="align-self:flex-start">' + icon('plus') + 'Añadir fondo o activo</button>' +
     '<span class="help">Apunta cada uno con su porcentaje o su importe, como te sea más cómodo. Lo que no apuntes aparece como «Sin asignar». Al cambiar de % a €, los números se convierten solos con el valor de la cartera.</span></div>' +
-    actions(r ? delBtn('mes', mes) : '', 'Guardar mes') + '</div>',
+    actions(r ? delBtn('mes', c0 + '|' + mes) : '', 'Guardar mes') + '</div>',
     fd => {
-      const m = String(fd.get('mes') || ''), ap = num(fd.get('ap')), val = num(fd.get('val'));
+      const m = String(fd.get('mes') || ''), ap = num(fd.get('ap')), val = num(fd.get('val')), cc = String(fd.get('cart') || '');
+      if (!D.carteras.some(c => c.id === cc)) return 'Elige una cartera.';
       if (!isMonth(m)) return 'Pon un mes válido (por ejemplo 2026-10).';
       if (ap == null || ap < 0) return 'Pon lo aportado (puede ser 0).';
       if (val == null || val < 0) return 'Pon el valor de la cartera.';
@@ -748,8 +809,8 @@ function sheetMes(mes) {
       const suma = items.reduce((a, b) => a + b.v, 0);
       if (modo === 'pct' && suma > 100.05) return 'Los porcentajes suman ' + suma.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' %: no pueden pasar de 100 %.';
       if (modo === 'eur' && suma > val + 0.01) return 'Los importes suman ' + eur(suma) + ', más que el valor de la cartera (' + eur(val) + ').';
-      const row = { mes: m, aportado: ap, valor: val }; if (items.length) row.rep = { modo, items };
-      D.cartera = D.cartera.filter(x => x.mes !== m); D.cartera.push(row);
+      const row = { c: cc, mes: m, aportado: ap, valor: val }; if (items.length) row.rep = { modo, items };
+      D.cartera = D.cartera.filter(x => !(x.mes === m && x.c === cc)); D.cartera.push(row); ui.cart = multi ? (ui.cart === 'total' ? 'total' : cc) : cc;
       save(); render(); toast('Mes guardado');
     });
 }
@@ -774,6 +835,29 @@ function sheetSeg(id) {
       const o = { id: p ? p.id : uid(), tipo: D.secciones.some(x => x.id === fd.get('tipo')) ? fd.get('tipo') : D.secciones[0].id, grupo: grupo.slice(0, 60), nombre: nombre.slice(0, 80), ticker: String(fd.get('ticker') || '').trim().slice(0, 30), web: webClean(fd.get('web')), fecha: isDate(f) ? f : null, precioEntrada: num(fd.get('pent')), precioActual: num(fd.get('pact')), motivo: String(fd.get('motivo') || '').trim().slice(0, 400) };
       if (p) D.seg[D.seg.indexOf(p)] = o; else D.seg.push(o);
       ui.segTipo = o.tipo; save(); render(); toast(p ? 'Posición actualizada' : 'Añadido al seguimiento');
+    });
+}
+
+function sheetCarts() {
+  openSheet('Carteras',
+    '<div class="form"><p class="sub" style="margin:0">Una cartera por plataforma (MyInvestor, Trade Republic, cripto…). Cambia su nombre, bórrala o crea una nueva. El fondo de emergencia mejor no lo apuntes aquí: no es inversión y te estropearía la rentabilidad del total.</p>' +
+    D.carteras.map(x => {
+      const n = D.cartera.filter(r => r.c === x.id).length;
+      return '<div class="fld"><label for="ct_' + esc(x.id) + '">' + (n ? n + ' mes' + (n === 1 ? '' : 'es') + ' apuntado' + (n === 1 ? '' : 's') : 'Sin meses apuntados') + '</label><div style="display:flex;gap:8px"><input id="ct_' + esc(x.id) + '" name="n_' + esc(x.id) + '" maxlength="30" autocomplete="off" style="flex:1" value="' + esc(x.nombre) + '">' +
+        (D.carteras.length > 1 ? '<button type="button" class="btn sm danger" data-act="sheetDel" data-kind="cart" data-id="' + esc(x.id) + '">Borrar</button>' : '') + '</div>' +
+        (n && D.carteras.length > 1 ? '<span class="help">Si la borras, también se borran sus ' + n + ' mes' + (n === 1 ? '' : 'es') + '.</span>' : '') + '</div>';
+    }).join('') +
+    '<div class="fld"><label for="ctNueva">Nueva cartera</label><input id="ctNueva" name="nueva" maxlength="30" autocomplete="off" placeholder="Trade Republic"></div>' +
+    actions('', 'Guardar') + '</div>',
+    fd => {
+      const names = D.carteras.map(x => [x, String(fd.get('n_' + x.id) || '').trim()]);
+      if (names.some(a => !a[1])) return 'Ninguna cartera puede quedarse sin nombre.';
+      const nueva = String(fd.get('nueva') || '').trim();
+      const all = names.map(a => a[1].toLowerCase()).concat(nueva ? [nueva.toLowerCase()] : []);
+      if (new Set(all).size !== all.length) return 'Hay dos carteras con el mismo nombre.';
+      names.forEach(a => { a[0].nombre = a[1].slice(0, 30); });
+      if (nueva) { const x = { id: 'c_' + uid(), nombre: nueva.slice(0, 30) }; D.carteras.push(x); ui.cart = x.id; }
+      save(); render(); toast(nueva ? 'Cartera creada' : 'Carteras guardadas');
     });
 }
 
@@ -855,7 +939,7 @@ function sheetImport(data) {
     (have ? '<div class="fld"><span class="lb">¿Qué hacemos con lo que ya tienes?</span><div class="opts" role="radiogroup">' + opt('modo', 'combinar', true, 'Combinar') + opt('modo', 'reemplazar', false, 'Reemplazar todo') + '</div><span class="help">Combinar añade lo nuevo sin tocar lo que ya tienes.</span></div>' : '<input type="hidden" name="modo" value="reemplazar">') +
     actions('', 'Importar') + '</div>',
     fd => {
-      if (fd.get('modo') === 'reemplazar') { D.gastos = c.gastos; D.cartera = c.cartera; D.seg = c.seg; D.secciones = c.secciones; D.objetivos = c.objetivos; }
+      if (fd.get('modo') === 'reemplazar') { D.gastos = c.gastos; D.cartera = c.cartera; D.carteras = c.carteras; D.seg = c.seg; D.secciones = c.secciones; D.objetivos = c.objetivos; }
       else {
         const has = (arr, id) => arr.some(x => x.id === id);
         c.gastos.forEach(x => { if (!has(D.gastos, x.id)) D.gastos.push(x); });
@@ -863,7 +947,8 @@ function sheetImport(data) {
         c.seg.forEach(x => { if (!has(D.seg, x.id)) D.seg.push(x); });
         ensureSecs(D.secciones, D.seg);
         c.objetivos.forEach(x => { if (!has(D.objetivos, x.id)) D.objetivos.push(x); });
-        c.cartera.forEach(x => { D.cartera = D.cartera.filter(y => y.mes !== x.mes); D.cartera.push(x); });
+        c.carteras.forEach(x => { if (!D.carteras.some(y => y.id === x.id)) D.carteras.push(x); });
+        c.cartera.forEach(x => { D.cartera = D.cartera.filter(y => !(y.mes === x.mes && y.c === x.c)); D.cartera.push(x); });
       }
       save(); render(); toast('Datos importados');
     });
@@ -882,20 +967,23 @@ function download(name, text, type) {
 }
 function doDelete(kind, id) {
   if (kind === 'gasto') D.gastos = D.gastos.filter(x => x.id !== id);
-  else if (kind === 'mes') D.cartera = D.cartera.filter(x => x.mes !== id);
+  else if (kind === 'mes') { const [cc, mm] = String(id).split('|'); D.cartera = D.cartera.filter(x => !(x.mes === mm && x.c === cc)); }
+  else if (kind === 'cart') { if (D.carteras.length <= 1) return; D.cartera = D.cartera.filter(x => x.c !== id); D.carteras = D.carteras.filter(x => x.id !== id); ui.cart = 'total'; }
   else if (kind === 'seg') D.seg = D.seg.filter(x => x.id !== id);
   else if (kind === 'obj') D.objetivos = D.objetivos.filter(x => x.id !== id);
   else if (kind === 'sec') { if (D.secciones.length <= 1) return; D.seg = D.seg.filter(x => x.tipo !== id); D.secciones = D.secciones.filter(x => x.id !== id); }
-  else if (kind === 'all') { const a = D.ajustes; D = blank(); D.ajustes = a; ui.inm = null; ui.escTipo = 'inv'; try { localStorage.removeItem('centex.esc'); } catch (e) { /* nada */ } }
-  save(); closeSheet(); render(); toast(kind === 'all' ? 'Todo borrado' : kind === 'sec' ? 'Sección borrada' : 'Borrado');
+  else if (kind === 'all') { const a = D.ajustes; D = blank(); D.ajustes = a; ui.inm = null; ui.escTipo = 'inv'; ui.cart = 'total'; try { localStorage.removeItem('centex.esc'); } catch (e) { /* nada */ } }
+  save(); closeSheet(); render(); toast(kind === 'all' ? 'Todo borrado' : kind === 'sec' ? 'Sección borrada' : kind === 'cart' ? 'Cartera borrada' : 'Borrado');
 }
 const ACT = {
   fab() { const f = fabOf(route()); if (f) ACT[f[1]](); },
   addGasto() { sheetGasto(); }, addMes() { sheetMes(); }, addSeg() { sheetSeg(); }, addObj() { sheetObj(); },
-  editGasto(el) { sheetGasto(el.dataset.id); }, editMes(el) { sheetMes(el.dataset.id); }, editSeg(el) { sheetSeg(el.dataset.id); },
+  editGasto(el) { sheetGasto(el.dataset.id); }, editMes(el) { sheetMes(el.dataset.id, el.dataset.c); }, editSeg(el) { sheetSeg(el.dataset.id); },
   editObj(el) { sheetObj(el.dataset.id); }, aportar(el) { sheetAportar(el.dataset.id); }, precios() { sheetPrecios(); },
   goSettings() { location.hash = '#/ajustes'; }, closeSheet() { closeSheet(); }, wipe() { sheetWipe(); },
   gMes(el) { ui.gMes = el.dataset.m; render(); },
+  cCart(el) { ui.cart = el.dataset.c; render(); window.scrollTo(0, 0); },
+  addCart() { sheetCarts(); setTimeout(() => { const i = $('#ctNueva'); if (i) i.focus(); }, 60); }, editCarts() { sheetCarts(); },
   cRango(el) { ui.cRango = el.dataset.r; render(); },
   segTipo(el) { ui.segTipo = el.dataset.t; render(); },
   escTipo(el) { ui.escTipo = el.dataset.t === 'inm' ? 'inm' : 'inv'; persistEsc(); render(); },
@@ -910,7 +998,7 @@ const ACT = {
   tema(el) { D.ajustes.tema = el.dataset.v; save(); applyTheme(); render(); },
   pickFile() { $('#fileIn').value = ''; $('#fileIn').click(); },
   export() {
-    download('centex-copia-' + todayISO() + '.json', JSON.stringify({ app: 'centex', version: 1, exportado: new Date().toISOString(), gastos: D.gastos, cartera: D.cartera, seg: D.seg, secciones: D.secciones, objetivos: D.objetivos }, null, 2), 'application/json');
+    download('centex-copia-' + todayISO() + '.json', JSON.stringify({ app: 'centex', version: 1, exportado: new Date().toISOString(), gastos: D.gastos, cartera: D.cartera, carteras: D.carteras, seg: D.seg, secciones: D.secciones, objetivos: D.objetivos }, null, 2), 'application/json');
     D.ajustes.ultimaCopia = todayISO(); save(); render(); toast('Copia descargada');
   },
   exportCsv() {
