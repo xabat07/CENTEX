@@ -12,7 +12,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-const eur = (n, d = 2) => n.toLocaleString('es-ES', { style: 'currency', currency: 'EUR', minimumFractionDigits: d, maximumFractionDigits: d });
+const eur = (n, d = 2) => n.toLocaleString('es-ES', { style: 'currency', currency: 'EUR', minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: 'always' });
 const eurA = n => eur(n, Math.abs(n * 100 % 100) < 0.5 || Math.abs(n * 100 % 100) > 99.5 ? 0 : 2);
 const sgn = n => (n > 0 ? '+' : n < 0 ? '−' : '');
 const pct = n => sgn(n) + Math.abs(n).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
@@ -239,7 +239,17 @@ function drawProj(el, rows) {
 }
 
 /* ---------- 5. pantallas ---------- */
-const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null, cRango: 'todo', objTab: 'obj', sim: null };
+const ui = { gMes: null, q: '', segTipo: 'accion', cmpA: null, cmpB: null, cRango: 'todo', objTab: 'obj', sim: null, escTipo: 'inv', inm: null };
+// Escenarios de inmueble: tiene muchos campos, así que se recuerda lo último que pusiste (aparte de tus datos y copias).
+const INM0 = { precio: '150000', impCompra: '4', otros: '2500', reforma: '0', ltv: '80', tipo: '3', plazo: '25', alquiler: '800', vacio: '1', gestion: '0', subida: '2', comunidad: '40', ibi: '300', seguro: '150', mant: '400', anios: '15', revalor: '2', gastosVenta: '4', impAlq: '20', impGan: '19', alt: '7' };
+try {
+  const sv = JSON.parse(localStorage.getItem('centex.esc') || 'null');
+  if (sv && typeof sv === 'object') {
+    if (sv.tipo === 'inm') ui.escTipo = 'inm';
+    if (sv.inm && typeof sv.inm === 'object') { ui.inm = Object.assign({}, INM0); Object.keys(INM0).forEach(k => { if (typeof sv.inm[k] === 'string') ui.inm[k] = sv.inm[k].slice(0, 20); }); }
+  }
+} catch (e) { /* sin datos guardados */ }
+const persistEsc = () => { try { localStorage.setItem('centex.esc', JSON.stringify({ tipo: ui.escTipo, inm: ui.inm })); } catch (e) { /* no pasa nada */ } };
 const ROUTES = ['inicio', 'gastos', 'cartera', 'seguimiento', 'objetivos', 'ajustes'];
 const NAV = [['inicio', 'Inicio', 'home'], ['gastos', 'Gastos', 'receipt'], ['cartera', 'Cartera', 'pie'], ['seguimiento', 'Seguimiento', 'trend'], ['objetivos', 'Objetivos', 'target']];
 const FAB = { inicio: ['Nuevo gasto', 'addGasto'], gastos: ['Nuevo gasto', 'addGasto'], cartera: ['Apuntar mes', 'addMes'], seguimiento: ['Añadir', 'addSeg'], objetivos: ['Nuevo objetivo', 'addObj'] };
@@ -403,23 +413,105 @@ function vSeg() {
   return { html: '<div class="page">' + vh('Seguimiento', 'Paper trading: sin dinero real', 'seguimiento') + chips + head + sum + body + '</div>' };
 }
 
+/* Inmueble: simulación mes a mes. Devuelve lo que pones, lo que te sobra cada año, lo que te queda al vender y la TIR. */
+const INM_RULES = {
+  precio: [1, 1e8, 'Precio de compra'], impCompra: [0, 30, 'Impuesto de compra'], otros: [0, 1e7, 'Notaría, registro y gestoría'], reforma: [0, 1e7, 'Reforma inicial'],
+  ltv: [0, 100, 'Hipoteca (% del precio)'], tipo: [0, 30, 'Interés anual'], plazo: [1, 40, 'Años de hipoteca'],
+  alquiler: [0, 1e6, 'Alquiler al mes'], vacio: [0, 12, 'Meses al año sin inquilino'], gestion: [0, 50, 'Gestión del alquiler'], subida: [-10, 20, 'Subida anual'],
+  comunidad: [0, 1e5, 'Comunidad'], ibi: [0, 1e6, 'IBI'], seguro: [0, 1e6, 'Seguro'], mant: [0, 1e6, 'Mantenimiento'],
+  anios: [1, 50, 'Años que lo tendrías'], revalor: [-20, 30, 'Revalorización anual'], gastosVenta: [0, 30, 'Gastos de venta'], impAlq: [0, 60, 'Impuesto del alquiler'], impGan: [0, 60, 'Impuesto de la ganancia'], alt: [-50, 100, 'Rentabilidad alternativa']
+};
+function inmParse(S) {
+  const p = {};
+  for (const k of Object.keys(INM_RULES)) {
+    const [lo, hi, lab] = INM_RULES[k], raw = String(S[k] == null ? '' : S[k]).trim();
+    if (raw === '') { if (k === 'precio' || k === 'anios') return { err: 'Pon «' + lab + '» para empezar.' }; if (k === 'plazo' && num(S.ltv) > 0) return { err: 'Pon «' + lab + '» (la hipoteca necesita un plazo).' }; p[k] = 0; continue; }
+    const v = num(raw);
+    if (v == null || v < lo || v > hi) return { err: 'Revisa «' + lab + '»: tiene que ser un número entre ' + lo.toLocaleString('es-ES') + ' y ' + hi.toLocaleString('es-ES') + '.' };
+    p[k] = v;
+  }
+  return { p };
+}
+function irrAnual(cf) {
+  const npv = r => { let t = 0, f = 1; const q = 1 / (1 + r); for (let i = 0; i < cf.length; i++) { t += cf[i] * f; f *= q; } return t; };
+  let lo = -0.2, hi = 0.5, a = npv(lo), b = npv(hi);
+  if (!(a * b < 0)) return null;
+  for (let k = 0; k < 200; k++) { const m = (lo + hi) / 2, v = npv(m); if ((v > 0) === (a > 0)) { lo = m; a = v; } else hi = m; }
+  return (Math.pow(1 + (lo + hi) / 2, 12) - 1) * 100;
+}
+function inmCalc(p) {
+  const loan = (p.precio * p.ltv) / 100, i = p.tipo / 1200, nPay = Math.round(p.plazo * 12);
+  const cuota = loan <= 0 ? 0 : i === 0 ? loan / nPay : (loan * i) / (1 - Math.pow(1 + i, -nPay));
+  const impC = (p.precio * p.impCompra) / 100, entrada = p.precio - loan, cash0 = entrada + impC + p.otros + p.reforma, coste = p.precio + impC + p.otros + p.reforma;
+  const n = Math.round(p.anios * 12), gastosAnio = p.comunidad * 12 + p.ibi + p.seguro + p.mant;
+  let bal = loan, y = { rent: 0, gastos: 0, gest: 0, int: 0, cap: 0, tax: 0, flow: 0 }, acc = { rent: 0, gastos: 0, int: 0 }, sumFlow = 0, neg = 0;
+  const cf = [-cash0];
+  for (let t = 1; t <= n; t++) {
+    const g = Math.pow(1 + p.subida / 100, Math.floor((t - 1) / 12));
+    const rentM = (p.alquiler * g * (12 - p.vacio)) / 12, gastosM = (gastosAnio / 12) * g, gestM = (rentM * p.gestion) / 100;
+    let pay = 0, intM = 0, capM = 0;
+    if (t <= nPay && bal > 0) { intM = bal * i; capM = Math.min(cuota - intM, bal); bal -= capM; pay = intM + capM; }
+    acc.rent += rentM; acc.gastos += gastosM + gestM; acc.int += intM;
+    let tax = 0;
+    if (t % 12 === 0 || t === n) { tax = (p.impAlq / 100) * Math.max(0, acc.rent - acc.gastos - acc.int); acc = { rent: 0, gastos: 0, int: 0 }; }
+    const flow = rentM - gastosM - gestM - pay - tax;
+    if (t <= 12) { y.rent += rentM; y.gastos += gastosM; y.gest += gestM; y.int += intM; y.cap += capM; y.tax += tax; y.flow += flow; }
+    sumFlow += flow; if (flow < 0) neg -= flow; cf.push(flow);
+  }
+  const venta = p.precio * Math.pow(1 + p.revalor / 100, n / 12), gV = (venta * p.gastosVenta) / 100;
+  const gan = venta - gV - coste, taxG = (p.impGan / 100) * Math.max(0, gan), neto = venta - gV - bal - taxG;
+  cf[n] += neto;
+  const profit = neto + sumFlow - cash0, invertido = cash0 + neg;
+  return { loan, cuota, impC, entrada, cash0, coste, n, venta, gV, deuda: bal, taxG, neto, profit, invertido, roi: invertido > 0 ? (profit / invertido) * 100 : null, tir: irrAnual(cf), y,
+    bruta: p.precio > 0 ? ((p.alquiler * 12) / p.precio) * 100 : 0, neta: coste > 0 ? ((p.alquiler * (12 - p.vacio)) - gastosAnio - (p.alquiler * (12 - p.vacio) * p.gestion) / 100) / coste * 100 : 0, coc: cash0 > 0 ? (y.flow / cash0) * 100 : null };
+}
+
 const objTabs = () => '<div class="chips" role="group" aria-label="Apartado">' + [['obj', 'Mis objetivos'], ['esc', 'Escenarios']].map(c => '<button class="chip" style="text-transform:none" data-act="objTab" data-t="' + c[0] + '" aria-pressed="' + (ui.objTab === c[0]) + '">' + c[1] + '</button>').join('') + '</div>';
-function vEsc() {
+function invFormHTML() {
   if (!ui.sim) {
     const lv = carteraRows().filter(r => r.valor != null).pop();
     ui.sim = { ini: lv ? fmtIn(Math.round(lv.valor)) : '', mes: lv && lv.ap > 0 ? fmtIn(Math.round(lv.ap)) : '', anios: '10', rent: '7', infl: '', meta: '' };
   }
   const S = ui.sim, f = (id, label, val, ph, help) => '<div class="fld"><label for="' + id + '">' + label + '</label><input id="' + id + '" inputmode="decimal" autocomplete="off" placeholder="' + ph + '" value="' + esc(val) + '">' + (help ? '<span class="help">' + help + '</span>' : '') + '</div>';
-  const html = '<div class="page">' + vh('Objetivos', 'Calcula cómo podría crecer tu dinero', 'objetivos') + objTabs() +
-    '<div class="card"><h2>Escenarios</h2><p class="sub">Pon unos números y mira cuánto podrías tener. Es una simulación, no una promesa.</p><div id="escForm" role="group" aria-label="Datos de la simulación" style="display:flex;flex-direction:column;gap:12px">' +
+  return '<div class="card"><h2>Inversión</h2><p class="sub">Pon unos números y mira cuánto podrías tener con fondos, acciones u otra inversión. Es una simulación, no una promesa.</p><div id="escForm" role="group" aria-label="Datos de la simulación" style="display:flex;flex-direction:column;gap:12px">' +
     '<div class="row2">' + f('esIni', 'Dinero que tienes (€)', S.ini, '0', S.ini ? 'Es tu cartera actual; cámbialo si quieres.' : '') + f('esMes', 'Aportación al mes (€)', S.mes, '0') + '</div>' +
     '<div class="row2">' + f('esAn', 'Durante cuántos años', S.anios, '10') + f('esRent', 'Rentabilidad anual (%)', S.rent, '7', 'Un ejemplo, no una predicción.') + '</div>' +
     '<div class="row2">' + f('esMeta', 'Meta (€, opcional)', S.meta, 'Ej. 20000', 'Te digo cuánto aportar al mes.') + f('esInfl', 'Inflación anual (%, opcional)', S.infl, 'Ej. 2', 'Para ver el resultado en euros de hoy.') + '</div>' +
-    '</div></div><div id="escOut" style="display:flex;flex-direction:column;gap:14px"></div></div>';
-  return { html, after() { renderEsc(); } };
+    '</div></div><div id="escOut" style="display:flex;flex-direction:column;gap:14px"></div>';
 }
-function readEsc() { const v = id => (($('#' + id) || {}).value || ''); ui.sim = { ini: v('esIni'), mes: v('esMes'), anios: v('esAn'), rent: v('esRent'), infl: v('esInfl'), meta: v('esMeta') }; }
-function renderEsc() {
+const INM_GRUPOS = [
+  ['La compra', 'Lo que pagas para hacerte con la vivienda.', [['precio', 'Precio de compra (€)', '150000'], ['impCompra', 'Impuesto de compra (%)', '4', 'En Euskadi el general de vivienda usada es el 4 %, pero depende de tu caso. Confírmalo con tu Hacienda Foral.'], ['otros', 'Notaría, registro y gestoría (€)', '2500'], ['reforma', 'Reforma inicial (€)', '0']]],
+  ['La hipoteca', 'Pon 0 en el porcentaje si pagas todo al contado.', [['ltv', 'Lo que presta el banco (% del precio)', '80'], ['tipo', 'Interés anual (%)', '3'], ['plazo', 'Años de hipoteca', '25']]],
+  ['El alquiler', 'Lo que cobras y lo que cuesta alquilar.', [['alquiler', 'Alquiler al mes (€)', '800'], ['vacio', 'Meses al año sin inquilino', '1', 'Para vacíos y cambios de inquilino.'], ['gestion', 'Gestión o agencia (% del alquiler)', '0'], ['subida', 'Subida anual del alquiler y los gastos (%)', '2']]],
+  ['Gastos de la vivienda', 'Lo que pagas tú, tenga o no tenga inquilino.', [['comunidad', 'Comunidad al mes (€)', '40'], ['ibi', 'IBI al año (€)', '300'], ['seguro', 'Seguro al año (€)', '150'], ['mant', 'Mantenimiento y averías al año (€)', '400']]],
+  ['La venta y los impuestos', 'Cuánto tiempo la tendrías y qué pasaría al venderla.', [['anios', 'Años que la tendrías', '15'], ['revalor', 'Revalorización anual (%)', '2', 'Un ejemplo, no una predicción.'], ['gastosVenta', 'Gastos de venta (%)', '4', 'Agencia, plusvalía municipal, etc.'], ['impAlq', 'Impuesto sobre el beneficio del alquiler (%)', '20', 'Depende de tu caso y de tu comunidad.'], ['impGan', 'Impuesto sobre la ganancia al vender (%)', '19', 'Depende de tu caso y de tu comunidad.']]],
+  ['Para comparar', 'Con qué quieres comparar el inmueble.', [['alt', 'Rentabilidad alternativa (%)', '7', 'Por ejemplo, la de un fondo indexado.']]]
+];
+function inmFormHTML() {
+  if (!ui.inm) ui.inm = Object.assign({}, INM0);
+  const f = x => '<div class="fld" style="justify-content:flex-end"><label for="im_' + x[0] + '">' + x[1] + '</label><input id="im_' + x[0] + '" inputmode="decimal" autocomplete="off" placeholder="' + x[2] + '" value="' + esc(ui.inm[x[0]]) + '"></div>';
+  const grupos = INM_GRUPOS.map(g => {
+    const rows = []; for (let k = 0; k < g[2].length; k += 2) {
+      const par = g[2].slice(k, k + 2);
+      rows.push('<div style="display:flex;flex-direction:column;gap:6px"><div class="row2">' + par.map(f).join('') + (par.length === 1 ? '<div></div>' : '') + '</div>' + par.filter(x => x[3]).map(x => '<span class="help" style="font-size:12px;color:var(--muted);font-weight:600"><b>' + x[1].replace(/ \(.*\)$/, '') + ':</b> ' + x[3] + '</span>').join('') + '</div>');
+    }
+    return '<div class="card"><h2>' + g[0] + '</h2><p class="sub" style="margin-bottom:10px">' + g[1] + '</p><div style="display:flex;flex-direction:column;gap:12px">' + rows.join('') + '</div></div>';
+  }).join('');
+  return '<p class="sub" style="padding:0 2px;font-size:14px;color:var(--ink2)">Los números de abajo son un ejemplo: cámbialos por los de la vivienda que estés mirando. Se guardan en este móvil para la próxima vez.</p><div id="escForm" role="group" aria-label="Datos del inmueble" style="display:flex;flex-direction:column;gap:14px">' + grupos + '</div><div id="escOut" style="display:flex;flex-direction:column;gap:14px"></div>';
+}
+function vEsc() {
+  const tipo = ui.escTipo === 'inm' ? 'inm' : 'inv';
+  const seg = '<div><div class="seg" role="group" aria-label="Tipo de escenario"><button data-act="escTipo" data-t="inv" aria-pressed="' + (tipo === 'inv') + '">Inversión</button><button data-act="escTipo" data-t="inm" aria-pressed="' + (tipo === 'inm') + '">Inmueble</button></div></div>';
+  const sub = tipo === 'inm' ? 'Mira si te sale a cuenta comprar una vivienda para alquilarla' : 'Calcula cómo podría crecer tu dinero';
+  return { html: '<div class="page">' + vh('Objetivos', sub, 'objetivos') + objTabs() + seg + (tipo === 'inm' ? inmFormHTML() : invFormHTML()) + '</div>', after() { renderEsc(); } };
+}
+function readEsc() {
+  if (ui.escTipo === 'inm') { const o = Object.assign({}, ui.inm || INM0); Object.keys(INM0).forEach(k => { const el = $('#im_' + k); if (el) o[k] = el.value; }); ui.inm = o; persistEsc(); }
+  else readInv();
+}
+function renderEsc() { if (ui.escTipo === 'inm') renderInm(); else renderInv(); }
+function readInv() { const v = id => (($('#' + id) || {}).value || ''); ui.sim = { ini: v('esIni'), mes: v('esMes'), anios: v('esAn'), rent: v('esRent'), infl: v('esInfl'), meta: v('esMeta') }; }
+function renderInv() {
   const out = $('#escOut'); if (!out || !ui.sim) return;
   const S = ui.sim, opt0 = t => (String(t).trim() === '' ? 0 : num(t));
   const ini = opt0(S.ini), mes = opt0(S.mes), an = num(S.anios), r = num(S.rent), inf = opt0(S.infl), meta = String(S.meta).trim() === '' ? null : num(S.meta);
@@ -444,8 +536,35 @@ function renderEsc() {
   const sc = [r - 3, r, r + 3].filter(x => x >= -50 && x <= 100);
   h += '<div class="card"><h2>¿Y si la rentabilidad fuera otra?</h2><p class="sub">Nadie sabe qué rentabilidad saldrá. Mira el abanico.</p><div class="splitleg">' + sc.map(x => '<div><span>' + (x === r ? '<b>Con tu ' + rtxt(x) + '</b>' : 'Con ' + rtxt(x)) + '</span><span class="num">' + eur(fvOf(ini, mes, rmOf(x), n), 0) + '</span></div>').join('') + '</div></div>';
   h += '<div class="card"><div class="card-head"><h2>Cómo crecería</h2></div><div class="legend"><span><i style="background:var(--s1)"></i>Lo que tendrías</span><span><i style="background:var(--s2)"></i>Lo que habrías aportado</span></div><div class="chart" id="chEsc"></div></div>' +
-    '<p class="sub" style="text-align:center;padding:0 8px">Simulación sencilla: la rentabilidad real cambia cada año y puede ser negativa. No es una promesa ni un consejo de inversión.</p>';
+    '<p class="sub" style="text-align:center;padding:0 8px;font-size:12.5px;color:var(--muted)">Simulación sencilla: la rentabilidad real cambia cada año y puede ser negativa. No es una promesa ni un consejo de inversión.</p>';
   out.innerHTML = h; drawProj($('#chEsc'), rows);
+}
+function renderInm() {
+  const out = $('#escOut'); if (!out || !ui.inm) return;
+  const pr = inmParse(ui.inm); if (pr.err) { out.innerHTML = empty(pr.err); return; }
+  const p = pr.p, R = inmCalc(p), pc1 = x => x.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %', sg = v => (Math.round(v) < 0 ? '−' : Math.round(v) > 0 ? '+' : '') + eur(Math.abs(v), 0);
+  const cls = v => (Math.round(v) > 0 ? 'dn-t' : Math.round(v) < 0 ? 'up-t' : ''), anTxt = p.anios === 1 ? '1 año' : p.anios.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' años';
+  const row = (l, v, b, c) => '<div><span>' + (b ? '<b>' + l + '</b>' : l) + '</span><span class="num' + (c ? ' ' + c : '') + '">' + (b ? '<b>' + v + '</b>' : v) + '</span></div>';
+  const tirTxt = R.tir == null ? 'La rentabilidad anual (TIR) no se puede calcular con estos números: con ellos no recuperarías el dinero que pones.' : '<b>' + pc1(R.tir) + ' al año</b> de rentabilidad media de todo el dinero que pones y recibes (TIR), frente a ' + pc1(p.alt) + ' de tu alternativa: ' + (R.tir > p.alt + 0.05 ? 'en números, sale mejor el inmueble.' : R.tir < p.alt - 0.05 ? 'en números, sale mejor tu alternativa.' : 'prácticamente igual.');
+  let h = '<div class="card stat"><div class="l">Si la vendes dentro de ' + anTxt + ', te quedarían</div><div class="v">' + eur(R.neto, 0) + '</div>' +
+    '<span class="pill ' + (Math.round(R.profit) > 0 ? 'good' : Math.round(R.profit) < 0 ? 'bad' : 'flat') + '">' + (R.profit > 0 ? '▲' : R.profit < 0 ? '▼' : '') + ' ' + sg(R.profit) + ' de ganancia total' + (R.roi != null ? ' · ' + pct(R.roi) : '') + '</span>' +
+    '<div class="d">Es lo que queda tras pagar la hipoteca pendiente, los gastos de venta y los impuestos. En total habrás puesto ' + eur(R.invertido, 0) + ' de tu bolsillo (entrada, gastos y lo que falte cada mes). La ganancia incluye también lo que te sobre del alquiler.</div>' +
+    '<div class="d" style="margin-top:8px">' + tirTxt + '</div></div>';
+  h += '<div class="card"><h2>Para comprarla, pones</h2><div class="splitleg" style="margin-top:10px">' + row('Entrada (lo que no presta el banco)', eur(R.entrada, 0)) + row('Impuesto de compra', eur(R.impC, 0)) + row('Notaría, registro y gestoría', eur(p.otros, 0)) + (p.reforma > 0 ? row('Reforma', eur(p.reforma, 0)) : '') + row('Total al empezar', eur(R.cash0, 0), true) + '</div>' +
+    (R.loan > 0 ? '<p style="font-size:14px;margin:12px 0 0">Hipoteca de <b>' + eur(R.loan, 0) + '</b>: cuota de <b>' + eur(R.cuota, 2) + ' al mes</b> durante ' + p.plazo.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' años.</p>' : '<p style="font-size:14px;margin:12px 0 0">Sin hipoteca: lo pagas todo al contado.</p>') + '</div>';
+  const y = R.y, devuelve = y.cap;
+  h += '<div class="card"><h2>El primer año, en números</h2><p class="sub" style="margin-bottom:10px">Con los años el alquiler y los gastos suben, y la parte de la cuota que son intereses baja.</p><div class="splitleg">' +
+    row('Alquiler cobrado', eur(y.rent, 0), false, 'dn-t') + row('Gastos de la vivienda', '−' + eur(y.gastos, 0)) + (y.gest > 0 ? row('Gestión del alquiler', '−' + eur(y.gest, 0)) : '') +
+    (R.loan > 0 ? row('Intereses de la hipoteca', '−' + eur(y.int, 0)) + row('Capital que devuelves al banco', '−' + eur(devuelve, 0)) : '') + (y.tax > 0 ? row('Impuestos del alquiler', '−' + eur(y.tax, 0)) : '') +
+    row('Te sobra (o te falta) en el año', sg(y.flow), true, cls(y.flow)) + '</div>' +
+    '<p style="font-size:14px;margin:12px 0 0">Eso son <b class="' + cls(y.flow) + '">' + sg(y.flow / 12) + ' al mes</b>. ' + (R.loan > 0 ? 'Ojo: el capital que devuelves no es un gasto perdido, es dinero tuyo que pasa a ser parte de la vivienda.' : '') + '</p></div>';
+  h += '<div class="card"><h2>Rentabilidad del alquiler</h2><div class="splitleg" style="margin-top:10px">' + row('Bruta (alquiler al año ÷ precio)', pc1(R.bruta)) + row('Neta (sin hipoteca ni impuestos)', pc1(R.neta)) + row('Año 1 sobre lo que pones', R.coc == null ? '—' : pc1(R.coc)) + '</div>' +
+    '<p class="sub" style="margin:10px 0 0">La <b>bruta</b> es la que salen en los anuncios. La <b>neta</b> descuenta gastos y vacíos y cuenta también lo que pagas al comprar. La última mide el año 1 frente a tu dinero puesto, con la hipoteca ya pagada.</p></div>';
+  h += '<div class="card"><h2>Al venderla, dentro de ' + anTxt + '</h2><div class="splitleg" style="margin-top:10px">' + row('Valor de venta (con ' + pc1(p.revalor) + ' al año)', eur(R.venta, 0)) + row('Gastos de venta', '−' + eur(R.gV, 0)) + (R.loan > 0 ? row('Hipoteca pendiente', '−' + eur(R.deuda, 0)) : '') + (R.taxG > 0 ? row('Impuesto sobre la ganancia', '−' + eur(R.taxG, 0)) : '') + row('Te quedan', eur(R.neto, 0), true) + '</div></div>';
+  const sc = [p.revalor - 2, p.revalor, p.revalor + 2].filter(x => x >= -20 && x <= 30);
+  h += '<div class="card"><h2>¿Y si la vivienda se revalorizara de otra forma?</h2><p class="sub" style="margin-bottom:10px">Nadie sabe cuánto subirá o bajará. Es lo que más cambia el resultado.</p><div class="splitleg">' + sc.map(x => { const q = inmCalc(Object.assign({}, p, { revalor: x })); return '<div><span>' + (x === p.revalor ? '<b>Con tus ' + pc1(x) + '</b>' : 'Con ' + pc1(x)) + '</span><span class="num">' + eur(q.neto, 0) + ' <em>' + (q.tir == null ? 'sin TIR' : 'TIR ' + pc1(q.tir)) + '</em></span></div>'; }).join('') + '</div></div>';
+  h += '<p class="sub" style="text-align:center;padding:0 8px;font-size:12.5px;color:var(--muted)">Simulación sencilla: usa los valores que has puesto, con la hipoteca a interés fijo y sin impagos ni obras grandes. Los impuestos dependen de cada caso y comunidad; consulta a un asesor antes de decidir. No es un consejo de inversión.</p>';
+  out.innerHTML = h;
 }
 function vObj() {
   if (ui.objTab === 'esc') return vEsc();
@@ -473,7 +592,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.5</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.6</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -695,7 +814,7 @@ function doDelete(kind, id) {
   else if (kind === 'seg') D.seg = D.seg.filter(x => x.id !== id);
   else if (kind === 'obj') D.objetivos = D.objetivos.filter(x => x.id !== id);
   else if (kind === 'sec') { if (D.secciones.length <= 1) return; D.seg = D.seg.filter(x => x.tipo !== id); D.secciones = D.secciones.filter(x => x.id !== id); }
-  else if (kind === 'all') { const a = D.ajustes; D = blank(); D.ajustes = a; }
+  else if (kind === 'all') { const a = D.ajustes; D = blank(); D.ajustes = a; ui.inm = null; ui.escTipo = 'inv'; try { localStorage.removeItem('centex.esc'); } catch (e) { /* nada */ } }
   save(); closeSheet(); render(); toast(kind === 'all' ? 'Todo borrado' : kind === 'sec' ? 'Sección borrada' : 'Borrado');
 }
 const ACT = {
@@ -707,6 +826,7 @@ const ACT = {
   gMes(el) { ui.gMes = el.dataset.m; render(); },
   cRango(el) { ui.cRango = el.dataset.r; render(); },
   segTipo(el) { ui.segTipo = el.dataset.t; render(); },
+  escTipo(el) { ui.escTipo = el.dataset.t === 'inm' ? 'inm' : 'inv'; persistEsc(); render(); },
   objTab(el) { ui.objTab = el.dataset.t === 'esc' ? 'esc' : 'obj'; render(); },
   addRep() {
     const box = $('#repRows'), modo = (document.querySelector('input[name="repModo"]:checked') || {}).value;
