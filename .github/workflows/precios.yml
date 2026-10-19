@@ -1,0 +1,24 @@
+name: Precios de fondos (prueba)
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/precios.yml'
+      - 'tools/precios.py'
+permissions:
+  contents: write
+jobs:
+  precios:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/precios.py
+      - name: Guardar resultado en el repositorio
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || (git commit -m "Prueba de precios: respuesta de las fuentes" && git push)
