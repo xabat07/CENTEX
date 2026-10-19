@@ -1,0 +1,16 @@
+{
+ "IE000ZYRH0Q7": {
+  "moneda": "EUR",
+  "nombre": "iShares Developed World Index Fund (IE) S Acc EUR",
+  "precios": {
+   "2026-10-15": 12.56
+  }
+ },
+ "IE0031786696": {
+  "moneda": "EUR",
+  "nombre": "Vanguard Emerging Markets Stock Index Fund EUR Acc",
+  "precios": {
+   "2026-10-16": 303.9
+  }
+ }
+}
