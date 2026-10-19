@@ -1,6 +1,9 @@
-name: Precios de fondos (prueba)
+name: Precios diarios de fondos
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '30 7 * * *'    # cada día a primera hora (UTC)
+    - cron: '30 19 * * *'   # y por la tarde-noche, por si el precio del día se publica tarde
   push:
     paths:
       - '.github/workflows/precios.yml'
@@ -15,10 +18,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python tools/precios.py
-      - name: Guardar resultado en el repositorio
+      - id: run
+        run: python tools/precios.py
+        continue-on-error: true
+      - name: Guardar precios nuevos en el repositorio
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data
-          git diff --cached --quiet || (git commit -m "Prueba de precios: respuesta de las fuentes" && git push)
+          git add data/precios.json
+          git diff --cached --quiet || (git commit -m "Precios de fondos" && git pull --rebase -q && git push)
+      - name: Avisar si alguna fuente ha fallado
+        if: steps.run.outcome == 'failure'
+        run: echo "Alguna fuente de precios ha fallado" && exit 1
