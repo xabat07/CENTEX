@@ -278,3 +278,7 @@ dialog[open]~#toast{bottom:24px}
 .credit a,.setrow p a{color:inherit;text-decoration:underline}
 .item>.lg{margin-right:0}
 .item.plain:has(>.lg){grid-template-columns:auto 1fr auto}
+
+.movrow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.movq{grid-column:1/-1;display:flex;gap:8px}
+.movq .btn{height:48px;padding:0;width:46px;flex:none}
