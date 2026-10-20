@@ -251,6 +251,7 @@ function sugFondos(cid) {
   return out.slice(0, 8);
 }
 // Compras del fondo: las que se apuntan a mano (lo que ya tenías, ventas…) más lo aportado a ese fondo en cada mes.
+const apDeFondo = fo => D.cartera.filter(r => r.c === fo.c).flatMap(r => (r.ap || []).filter(a => a.id === fo.id).map(a => ({ mes: r.mes, d: a.d, v: a.v })));
 function fondoMovs(fo) {
   const out = (fo.movs || []).slice();
   D.cartera.forEach(r => { if (r.c === fo.c) (r.ap || []).forEach(a => { if (a.id === fo.id && a.v) out.push({ f: a.d, m: 'eur', v: a.v }); }); });
@@ -626,7 +627,7 @@ function vCartera() {
   // Tus fondos: lista de la cartera (o de todas en el Total) y, para los que tienen precio diario, su valor día a día
   const fl = isTot ? D.fondos : D.fondos.filter(f => f.c === ui.cart), serie = serieFondos(fl);
   const conPrecio = fl.some(fo => pDates(fo.isin).length);
-  const fRows = fl.map(fo => { const us = fondoUnits(fo), u = unitsAt(us, '9999-12-31'), ds = pDates(fo.isin), pa = ds.length ? priceAt(fo.isin, ds[ds.length - 1]) : null; return { fo, u, pa, val: pa ? u * pa.p : null, aprox: us.some(x => x.aprox) }; });
+  const fRows = fl.map(fo => { const us = fondoUnits(fo), u = unitsAt(us, '9999-12-31'), ds = pDates(fo.isin), pa = ds.length ? priceAt(fo.isin, ds[ds.length - 1]) : null; return { fo, u, pa, ap: apDeFondo(fo).reduce((t, a) => t + a.v, 0), val: pa ? u * pa.p : null, aprox: us.some(x => x.aprox) }; });
   const uFmt = u => u.toLocaleString('es-ES', { maximumFractionDigits: 4 });
   const sug = isTot ? [] : sugFondos(ui.cart);
   let dia = '';
@@ -634,7 +635,7 @@ function vCartera() {
     const ult = serie[serie.length - 1], ant = serie[serie.length - 2], dv = ult && ant ? ult.v - ant.v : null;
     dia = '<div class="card"><div class="card-head"><h2>Tus fondos</h2>' + (isTot ? '' : '<button class="btn sm ghost" data-act="addFondo">+ Fondo</button>') + '</div>' +
       (conPrecio ? (ult ? '<p class="sub" style="margin:0">Día a día: valor estimado a ' + esc(dLabel(ult.d)) + ': <b class="num">' + eur(ult.v) + '</b>' + (dv != null ? ' · <span class="' + (dv >= 0 ? 'dn-t' : 'up-t') + '">' + (dv >= 0 ? '▲ ' : '▼ ') + sgn(dv) + eur(Math.abs(dv)) + ' vs. día anterior</span>' : '') + '</p>' : '') + '<div class="chart" id="chDia"></div>' : '<p class="sub" style="margin:0">Ninguno de estos fondos tiene todavía precio diario, así que no hay gráfica día a día.</p>') +
-      '<div class="list">' + fRows.map(r => '<button class="item plain" data-act="editFondo" data-id="' + esc(r.fo.id) + '"><span class="t"><b>' + esc(fNombre(r.fo)) + '</b><small>' + (r.pa ? uFmt(r.u) + ' participaciones · ' + eur(r.pa.p) + ' a ' + esc(dLabel(r.pa.f)) + (r.aprox ? ' · aprox.' : '') : (r.fo.isin ? 'Sin precio diario todavía · pásale el ISIN a Claude' : 'Sin ISIN: sin precio diario')) + '</small></span><span class="r">' + (r.val == null ? '—' : eur(r.val)) + '</span></button>').join('') + '</div>' +
+      '<div class="list">' + fRows.map(r => '<button class="item plain" data-act="editFondo" data-id="' + esc(r.fo.id) + '"><span class="t"><b>' + esc(fNombre(r.fo)) + '</b><small>' + (r.pa ? uFmt(r.u) + ' participaciones · ' + eur(r.pa.p) + ' a ' + esc(dLabel(r.pa.f)) + (r.aprox ? ' · aprox.' : '') + (r.ap ? ' · aportado en los meses: ' + eur(r.ap) : '') : (r.fo.isin ? 'Sin precio diario todavía · pásale el ISIN a Claude' : 'Sin ISIN: sin precio diario')) + '</small></span><span class="r">' + (r.val == null ? '—' : eur(r.val)) + '</span></button>').join('') + '</div>' +
       (conPrecio ? '<p class="sub" style="margin:8px 2px 0">Es una estimación: participaciones por el último precio publicado (puede ir 1-3 días retrasado). El valor real es el que apuntas cada mes.</p>' : '') + '</div>';
   } else if (!isTot) {
     dia = '<div class="card"><div class="card-head"><h2>Tus fondos</h2></div><p class="sub" style="margin:0 0 10px">Añade los fondos de esta cartera. Así podrás apuntar lo aportado a cada uno cada mes y, si tienen precio diario, ver cómo fluctúa su valor día a día.</p><button class="btn" data-act="addFondo">' + icon('plus') + 'Añadir fondo</button></div>';
@@ -844,7 +845,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.10</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.10.1</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -1021,6 +1022,7 @@ function sheetFondo(id, pre) {
     '<div class="fld"><label for="fIsin">ISIN (opcional)</label><input id="fIsin" name="isin" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="IE000ZYRH0Q7" style="text-transform:uppercase" value="' + esc(v.isin) + '"><span class="help">Con el ISIN, y si ese fondo ya tiene precio diario, sale su gráfica día a día. Si no lo tiene, el fondo se añade igual (cuenta en lo aportado y en el reparto) y puedes pasarle el ISIN a Claude para que le busque precios.</span>' +
     (isins.length ? '<div class="chips" style="margin-top:6px" role="group" aria-label="Fondos con precio diario">' + isins.map(i => '<button type="button" class="chip" style="text-transform:none" data-act="fillIsin" data-isin="' + esc(i) + '" data-n="' + esc(PR[i].nombre) + '">' + esc(PR[i].nombre) + '</button>').join('') + '</div><span class="help">Ya tienen precio diario: toca uno para rellenar nombre e ISIN.</span>' : '') + '</div>' +
     (multi ? (fo ? '<input type="hidden" name="cart" value="' + esc(c0) + '">' : '<div class="fld"><span class="lb">Cartera</span><div class="opts" role="radiogroup" aria-label="Cartera">' + D.carteras.map(c => opt('cart', c.id, c.id === c0, esc(c.nombre))).join('') + '</div></div>') : '<input type="hidden" name="cart" value="' + esc(c0) + '">') +
+    (fo && apDeFondo(fo).length ? '<p class="sub" style="margin:0">Ya cuentan, desde «Apuntar mes»: ' + apDeFondo(fo).map(a => eur(a.v) + ' el ' + esc(dLabel(a.d))).join(' · ') + '. Para corregirlas, edita ese mes; aquí no las repitas.</p>' : '') +
     '<div class="fld"><span class="lb">Lo que ya tienes y ventas</span><span class="help" style="margin:0 0 6px">Pon una fila con la fecha de hoy y las participaciones que ves en tu plataforma. No repitas aquí lo que aportas cada mes: eso se apunta en «Apuntar mes», fondo por fondo, y entra solo. Una venta va en negativo.</span></div>' +
     '<div id="movRows" style="display:flex;flex-direction:column;gap:8px">' + v.movs.map(m => movRow(m.f, m.m, m.v)).join('') + '</div>' +
     '<button type="button" class="btn sm ghost" data-act="addMov" style="align-self:flex-start">' + icon('plus') + 'Añadir fila</button>' +
