@@ -282,3 +282,8 @@ dialog[open]~#toast{bottom:24px}
 .movrow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .movq{grid-column:1/-1;display:flex;gap:8px}
 .movq .btn{height:48px;padding:0;width:46px;flex:none}
+
+.fundcard{border:1.5px solid var(--line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.fundcard .fh{display:flex;flex-direction:column;gap:2px}
+.fundcard .fh small{color:var(--muted);font-weight:600;font-size:12px}
+.sugbox{border-top:1px solid var(--line);margin-top:6px}

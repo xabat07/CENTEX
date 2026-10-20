@@ -105,13 +105,19 @@ function ensureCarts(carts, rows) {
 function cleanFondos(a, carts) {
   const ids = new Set(), ok = [];
   (Array.isArray(a) ? a : []).forEach(x => {
-    if (!x || !isIsin(x.isin)) return;
+    if (!x) return;
+    const isin = x.isin == null ? '' : String(x.isin).trim().toUpperCase(), nombre = String(x.nombre == null ? '' : x.nombre).trim().slice(0, 60);
+    if (isin && !isIsin(isin)) return;
+    if (!isin && !nombre) return;
     const movs = (Array.isArray(x.movs) ? x.movs : []).filter(m => m && isDate(m.f) && (m.m === 'part' || m.m === 'eur') && typeof m.v === 'number' && isFinite(m.v) && m.v !== 0).slice(0, 300).map(m => ({ f: m.f, m: m.m, v: m.v }));
-    if (!movs.length) return;
     let id = typeof x.id === 'string' && x.id ? x.id.slice(0, 40) : 'f_' + uid(); if (ids.has(id)) id = 'f_' + uid(); ids.add(id);
-    ok.push({ id, isin: x.isin, c: carts.some(c => c.id === x.c) ? x.c : carts[0].id, movs });
+    ok.push({ id, isin, nombre, c: carts.some(c => c.id === x.c) ? x.c : carts[0].id, movs });
   });
   return ok;
+}
+// Lo aportado a cada fondo en un mes: [{id del fondo, v importe, d día}]
+function cleanAp(a) {
+  return (Array.isArray(a) ? a : []).filter(x => x && typeof x.id === 'string' && x.id && typeof x.v === 'number' && isFinite(x.v) && x.v !== 0 && isDate(x.d)).slice(0, 60).map(x => ({ id: x.id.slice(0, 40), v: x.v, d: x.d }));
 }
 const blank = () => ({ gastos: [], cartera: [], carteras: CART0(), fondos: [], seg: [], secciones: SECS0(), objetivos: [], ajustes: { tema: 'auto', ultimaCopia: null, logos: true } });
 function norm(o) {
@@ -131,7 +137,7 @@ function save() { try { localStorage.setItem(KEY, JSON.stringify(D)); } catch (e
 // Reparto de la cartera de un mes: modo 'pct' (valores en %) o 'eur' (valores en €). Opcional.
 function cleanRep(r) {
   if (!r || typeof r !== 'object' || !Array.isArray(r.items)) return null;
-  const items = r.items.filter(i => i && String(i.n == null ? '' : i.n).trim() && (typeof i.v === 'number' ? i.v : num(i.v)) > 0).slice(0, 40).map(i => ({ n: String(i.n).trim().slice(0, 40), v: typeof i.v === 'number' ? i.v : num(i.v) }));
+  const items = r.items.filter(i => i && String(i.n == null ? '' : i.n).trim() && (typeof i.v === 'number' ? i.v : num(i.v)) > 0).slice(0, 40).map(i => { const o = { n: String(i.n).trim().slice(0, 40), v: typeof i.v === 'number' ? i.v : num(i.v) }; if (typeof i.id === 'string' && i.id) o.id = i.id.slice(0, 40); return o; });
   return items.length ? { modo: r.modo === 'eur' ? 'eur' : 'pct', items } : null;
 }
 // Limpia un archivo importado: solo deja lo que tiene el formato correcto.
@@ -141,7 +147,7 @@ function cleanData(o) {
   const n = v => { const x = typeof v === 'number' ? v : num(v); return isFinite(x) ? x : null; };
   const arr = k => (Array.isArray(o[k]) ? o[k] : []);
   const seg = arr('seg').filter(x => x && s(x.nombre) && s(x.grupo)).map(x => ({ id: s(x.id || uid(), 40), tipo: s(x.tipo, 40).trim() || 'accion', grupo: s(x.grupo, 60), nombre: s(x.nombre, 80), ticker: s(x.ticker, 30), web: webClean(x.web), fecha: isDate(x.fecha) ? x.fecha : null, precioEntrada: n(x.precioEntrada), precioActual: n(x.precioActual), motivo: s(x.motivo, 400) }));
-  const cartera = arr('cartera').filter(x => x && isMonth(x.mes)).map(x => { const o2 = { c: s(x.c, 40), mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) }, rp = cleanRep(x.rep); if (rp) o2.rep = rp; return o2; });
+  const cartera = arr('cartera').filter(x => x && isMonth(x.mes)).map(x => { const o2 = { c: s(x.c, 40), mes: x.mes, aportado: n(x.aportado) || 0, valor: n(x.valor) }, rp = cleanRep(x.rep), ap = cleanAp(x.ap); if (rp) o2.rep = rp; if (ap.length) o2.ap = ap; return o2; });
   const carteras = ensureCarts(cleanCarts(o.carteras), cartera);
   return {
     gastos: arr('gastos').filter(x => x && isDate(x.fecha) && n(x.cant) != null).map(x => ({ id: s(x.id || uid(), 40), fecha: x.fecha, desc: s(x.desc, 80), cat: CATS.includes(x.cat) ? x.cat : 'Otros', cant: n(x.cant), pago: x.pago === 'Efectivo' ? 'Efectivo' : 'Tarjeta' })),
@@ -233,9 +239,26 @@ function priceAt(isin, d) {   // último precio con fecha <= d
   return best === null ? null : { f: best, p: ps[best] };
 }
 // Compras del fondo convertidas a participaciones. Si se apuntó un importe y ese día no hay precio guardado (el histórico empieza en octubre de 2026), se usa el primer precio y se marca como aproximado.
+const normN = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+const fNombre = fo => fo.nombre || (PR[fo.isin] || {}).nombre || fo.isin || 'Fondo';
+// Nombres que salen en el reparto de una cartera pero no están en su lista de fondos.
+function sugFondos(cid) {
+  const fl = D.fondos.filter(f => f.c === cid), have = new Set(fl.flatMap(f => [normN(fNombre(f)), normN((PR[f.isin] || {}).nombre)])), out = [];
+  D.cartera.filter(r => r.c === cid && r.rep).forEach(r => r.rep.items.forEach(i => {
+    const k = normN(i.n);
+    if (k && !have.has(k) && !(i.id && fl.some(f => f.id === i.id)) && !out.some(o => normN(o) === k)) out.push(i.n);
+  }));
+  return out.slice(0, 8);
+}
+// Compras del fondo: las que se apuntan a mano (lo que ya tenías, ventas…) más lo aportado a ese fondo en cada mes.
+function fondoMovs(fo) {
+  const out = (fo.movs || []).slice();
+  D.cartera.forEach(r => { if (r.c === fo.c) (r.ap || []).forEach(a => { if (a.id === fo.id && a.v) out.push({ f: a.d, m: 'eur', v: a.v }); }); });
+  return out;
+}
 function fondoUnits(fo) {
   const ds = pDates(fo.isin), first = ds.length ? PR[fo.isin].precios[ds[0]] : null;
-  return fo.movs.slice().sort((a, b) => (a.f < b.f ? -1 : a.f > b.f ? 1 : 0)).map(m => {
+  return fondoMovs(fo).sort((a, b) => (a.f < b.f ? -1 : a.f > b.f ? 1 : 0)).map(m => {
     if (m.m === 'part') return { f: m.f, u: m.v, aprox: false };
     const pa = priceAt(fo.isin, m.f);
     if (pa) return { f: m.f, u: m.v / pa.p, aprox: false };
@@ -600,21 +623,23 @@ function vCartera() {
   const porCard = isTot ? '<div class="card"><div class="card-head"><h2>Por cartera</h2></div><div class="list">' + porC.map(x => '<button class="item plain" data-act="cCart" data-c="' + esc(x.c.id) + '"><span class="t"><b>' + esc(x.c.nombre) + '</b><small>' + (x.l ? 'Aportado ' + eur(x.l.acum) + ' · ' + (totV > 0 ? (x.l.valor / totV * 100).toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' % del total' : '') : 'Sin meses apuntados') + '</small></span><span class="r">' + (x.l ? eur(x.l.valor) + (x.l.gan == null ? '' : '<small class="' + (x.l.gan >= 0 ? 'dn-t' : 'up-t') + '">' + (x.l.gan >= 0 ? '▲ ' : '▼ ') + sgn(x.l.gan) + eur(Math.abs(x.l.gan)) + '</small>') : '—') + '</span></button>').join('') + '</div></div>' : '';
   // En qué está invertido: el reparto del último mes que lo tenga apuntado.
   const lastRep = isTot ? null : all.slice().reverse().find(r => repartoDe(r)), rp = isTot ? repTotal() : lastRep ? repartoDe(lastRep) : null;
-  // Día a día: fondos con precio diario (de esta cartera, o de todas en el Total)
+  // Tus fondos: lista de la cartera (o de todas en el Total) y, para los que tienen precio diario, su valor día a día
   const fl = isTot ? D.fondos : D.fondos.filter(f => f.c === ui.cart), serie = serieFondos(fl);
-  const hayPrecios = Object.keys(PR).some(isIsin);
+  const conPrecio = fl.some(fo => pDates(fo.isin).length);
   const fRows = fl.map(fo => { const us = fondoUnits(fo), u = unitsAt(us, '9999-12-31'), ds = pDates(fo.isin), pa = ds.length ? priceAt(fo.isin, ds[ds.length - 1]) : null; return { fo, u, pa, val: pa ? u * pa.p : null, aprox: us.some(x => x.aprox) }; });
   const uFmt = u => u.toLocaleString('es-ES', { maximumFractionDigits: 4 });
+  const sug = isTot ? [] : sugFondos(ui.cart);
   let dia = '';
   if (fl.length) {
     const ult = serie[serie.length - 1], ant = serie[serie.length - 2], dv = ult && ant ? ult.v - ant.v : null;
-    dia = '<div class="card"><div class="card-head"><h2>Día a día</h2>' + (isTot ? '' : '<button class="btn sm ghost" data-act="addFondo">+ Fondo</button>') + '</div>' +
-      (ult ? '<p class="sub" style="margin:0">Valor estimado de tus fondos a ' + esc(dLabel(ult.d)) + ': <b class="num">' + eur(ult.v) + '</b>' + (dv != null ? ' · <span class="' + (dv >= 0 ? 'dn-t' : 'up-t') + '">' + (dv >= 0 ? '▲ ' : '▼ ') + sgn(dv) + eur(Math.abs(dv)) + ' vs. día anterior</span>' : '') + '</p>' : '') +
-      '<div class="chart" id="chDia"></div><div class="list">' + fRows.map(r => '<button class="item plain" data-act="editFondo" data-id="' + esc(r.fo.id) + '"><span class="t"><b>' + esc((PR[r.fo.isin] || {}).nombre || r.fo.isin) + '</b><small>' + uFmt(r.u) + ' participaciones' + (r.pa ? ' · ' + eur(r.pa.p) + ' a ' + esc(dLabel(r.pa.f)) : ' · sin precio todavía') + (r.aprox ? ' · aprox.' : '') + '</small></span><span class="r">' + (r.val == null ? '—' : eur(r.val)) + '</span></button>').join('') + '</div>' +
-      '<p class="sub" style="margin:8px 2px 0">Es una estimación: participaciones por el último precio publicado (puede ir 1-3 días retrasado). El valor real es el que apuntas cada mes.</p></div>';
-  } else if (!isTot && hayPrecios) {
-    dia = '<div class="card"><div class="card-head"><h2>Día a día</h2></div><p class="sub" style="margin:0 0 10px">Apunta tus fondos (participaciones o el importe que pusiste) y verás cómo fluctúa su valor cada día, con los precios que se guardan solos.</p><button class="btn" data-act="addFondo">' + icon('plus') + 'Añadir fondo</button></div>';
+    dia = '<div class="card"><div class="card-head"><h2>Tus fondos</h2>' + (isTot ? '' : '<button class="btn sm ghost" data-act="addFondo">+ Fondo</button>') + '</div>' +
+      (conPrecio ? (ult ? '<p class="sub" style="margin:0">Día a día: valor estimado a ' + esc(dLabel(ult.d)) + ': <b class="num">' + eur(ult.v) + '</b>' + (dv != null ? ' · <span class="' + (dv >= 0 ? 'dn-t' : 'up-t') + '">' + (dv >= 0 ? '▲ ' : '▼ ') + sgn(dv) + eur(Math.abs(dv)) + ' vs. día anterior</span>' : '') + '</p>' : '') + '<div class="chart" id="chDia"></div>' : '<p class="sub" style="margin:0">Ninguno de estos fondos tiene todavía precio diario, así que no hay gráfica día a día.</p>') +
+      '<div class="list">' + fRows.map(r => '<button class="item plain" data-act="editFondo" data-id="' + esc(r.fo.id) + '"><span class="t"><b>' + esc(fNombre(r.fo)) + '</b><small>' + (r.pa ? uFmt(r.u) + ' participaciones · ' + eur(r.pa.p) + ' a ' + esc(dLabel(r.pa.f)) + (r.aprox ? ' · aprox.' : '') : (r.fo.isin ? 'Sin precio diario todavía · pásale el ISIN a Claude' : 'Sin ISIN: sin precio diario')) + '</small></span><span class="r">' + (r.val == null ? '—' : eur(r.val)) + '</span></button>').join('') + '</div>' +
+      (conPrecio ? '<p class="sub" style="margin:8px 2px 0">Es una estimación: participaciones por el último precio publicado (puede ir 1-3 días retrasado). El valor real es el que apuntas cada mes.</p>' : '') + '</div>';
+  } else if (!isTot) {
+    dia = '<div class="card"><div class="card-head"><h2>Tus fondos</h2></div><p class="sub" style="margin:0 0 10px">Añade los fondos de esta cartera. Así podrás apuntar lo aportado a cada uno cada mes y, si tienen precio diario, ver cómo fluctúa su valor día a día.</p><button class="btn" data-act="addFondo">' + icon('plus') + 'Añadir fondo</button></div>';
   }
+  if (sug.length) dia = dia.replace(/<\/div>$/, '') + '<div class="sugbox"><p class="sub" style="margin:10px 2px 6px">Están en tu reparto pero no en la lista. Toca uno para añadirlo:</p><div class="chips">' + sug.map(n => '<button class="chip" style="text-transform:none" data-act="sugFondo" data-n="' + esc(n) + '">+ ' + esc(n) + '</button>').join('') + '</div></div></div>';
   const repCard = rp ? '<div class="card"><div class="card-head"><h2>En qué está invertido</h2></div><p class="sub" style="margin:0">' + (isTot ? 'Según el último reparto apuntado de cada cartera' : 'Según ' + esc(mLabel(lastRep.mes, true))) + '</p>' +
     '<div class="splitbar" aria-hidden="true">' + rp.map((i, k) => '<span style="width:' + Math.max(i.pct, 0) + '%;background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></span>').join('') + '</div>' +
     '<div class="splitleg">' + rp.map((i, k) => { const fc = i.resto ? [] : logoCands(i.n, '', '').filter(d => Object.values(NAME_DOM).includes(d)); return '<div><span>' + (fc.length ? logoHTML(i.n, fc, true) : '<i class="dot" style="background:' + (i.resto ? 'var(--line2)' : 'var(--s' + (k % 5 + 1) + ')') + '"></i>') + esc(i.n) + '</span><span class="num">' + eur(i.imp) + ' <em>' + i.pct.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %</em></span></div>'; }).join('') + (D.ajustes.logos && rp.some(i => !i.resto && logoCands(i.n, '', '').some(d => Object.values(NAME_DOM).includes(d))) ? '<p class="credit">' + CREDIT + '</p>' : '') + '</div></div>' : '';
@@ -819,7 +844,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.9</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.10</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -868,34 +893,82 @@ function sheetGasto(id) {
   setTimeout(() => { const i = $('#fCant'); if (i && !g) i.focus(); }, 60);
 }
 
-const repRow = (n, v, modo) => '<div class="reprow"><input name="rn" list="dlRep" maxlength="40" autocomplete="off" placeholder="Fondo o activo" aria-label="Nombre del fondo o activo" value="' + esc(n) + '"><input name="rv" inputmode="decimal" autocomplete="off" placeholder="' + (modo === 'eur' ? '€' : '%') + '" aria-label="' + (modo === 'eur' ? 'Importe en euros' : 'Porcentaje') + '" value="' + fmtIn(v) + '"><button type="button" class="btn ghost" data-act="delRep" aria-label="Quitar">' + icon('x') + '</button></div>';
+const repRow = (n, v, modo) => '<div class="reprow"><input type="hidden" name="ri" value=""><input name="rn" list="dlRep" maxlength="40" autocomplete="off" placeholder="Fondo o activo" aria-label="Nombre del fondo o activo" value="' + esc(n) + '"><input name="rv" inputmode="decimal" autocomplete="off" placeholder="' + (modo === 'eur' ? '€' : '%') + '" aria-label="' + (modo === 'eur' ? 'Importe en euros' : 'Porcentaje') + '" value="' + fmtIn(v) + '"><button type="button" class="btn ghost" data-act="delRep" aria-label="Quitar">' + icon('x') + '</button></div>';
+const lastDay = mes => { const [y, m] = mes.split('-').map(Number); return new Date(y, m, 0).toLocaleDateString('sv-SE'); };
+const dayDefault = mes => (mes === mk(todayISO()) ? todayISO() : isMonth(mes) ? lastDay(mes) : todayISO());
+// Reparto de partida de un mes: el que ya tiene, o el del último mes de esa cartera (con sus % si estaba en %).
+function monthBase(c, r) {
+  const prev = carteraRows(c).filter(x => x.rep && x.mes !== (r ? r.mes : '')).pop();
+  const vacio = { modo: 'pct', items: [] };
+  return r ? (r.rep || vacio) : prev ? { modo: prev.rep.modo, items: prev.rep.items.map(i => Object.assign({}, i, { v: prev.rep.modo === 'pct' ? i.v : '' })) } : vacio;
+}
+const fundCard = (f, repV, apV, day, auto, modo) => '<div class="fundcard"><div class="fh"><b>' + esc(fNombre(f)) + '</b>' + (f.isin ? '<small>' + esc(f.isin) + '</small>' : '') + '</div><input type="hidden" name="rn" value="' + esc(fNombre(f)) + '"><input type="hidden" name="ri" value="' + esc(f.id) + '">' +
+  '<div class="row2"><div class="fld"><label for="fa_' + esc(f.id) + '">Aportado (€)</label><input id="fa_' + esc(f.id) + '" name="fa_' + esc(f.id) + '" inputmode="decimal" autocomplete="off" placeholder="0" value="' + fmtIn(apV) + '"></div>' +
+  '<div class="fld"><label for="rv_' + esc(f.id) + '">Vale (' + (modo === 'eur' ? '€' : '%') + ')</label><input id="rv_' + esc(f.id) + '" name="rv" inputmode="decimal" autocomplete="off" placeholder="' + (modo === 'eur' ? '€' : '%') + '" aria-label="' + (modo === 'eur' ? 'Importe en euros' : 'Porcentaje') + '" value="' + fmtIn(repV) + '"></div></div>' +
+  '<div class="fld"><label for="fd_' + esc(f.id) + '">Día de la aportación</label><input id="fd_' + esc(f.id) + '" name="fd_' + esc(f.id) + '" type="date" data-auto="' + (auto ? 1 : 0) + '" value="' + esc(day) + '"></div></div>';
+// Parte del formulario que depende de la cartera: aportado (total, o por fondo) y reparto.
+const DLREP = { toString() { return '<datalist id="dlRep">' + [...new Set(D.cartera.flatMap(x => (x.rep && x.rep.items || []).map(i => i.n)))].map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>'; } };
+function monthBlock(c, mes, r, base) {
+  const funds = D.fondos.filter(f => f.c === c), modo = base.modo, def = dayDefault(mes), used = new Set();
+  const modoRadios = '<div class="opts" role="radiogroup" aria-label="Cómo apuntar el reparto">' + opt('repModo', 'pct', modo !== 'eur', 'En %') + opt('repModo', 'eur', modo === 'eur', 'En €') + '</div>';
+  if (!funds.length) {
+    const items = base.items.length ? base.items : [{ n: '', v: '' }, { n: '', v: '' }];
+    return '<div class="fld"><label for="cAp">Aportado ese mes (€)</label><input id="cAp" name="ap" inputmode="decimal" autocomplete="off" placeholder="0" value="' + (r ? fmtIn(r.aportado) : '') + '"><span class="help">¿Quieres apuntar lo aportado a cada fondo por separado? Añade primero tus fondos en la tarjeta «Tus fondos» de esta cartera.</span></div>' +
+      '<div class="fld"><span class="lb">¿En qué está invertido? (opcional)</span>' + modoRadios + '<div id="repRows" style="display:flex;flex-direction:column;gap:8px;margin-top:4px">' + items.map(i => repRow(i.n, i.v, modo)).join('') + '</div>' +
+      DLREP + '<button type="button" class="btn sm ghost" data-act="addRep" style="align-self:flex-start">' + icon('plus') + 'Añadir fondo o activo</button>' +
+      '<span class="help">Apunta cada uno con su porcentaje o su importe, como te sea más cómodo. Lo que no apuntes aparece como «Sin asignar». Al cambiar de % a €, los números se convierten solos con el valor de la cartera.</span></div>';
+  }
+  const cards = funds.map(f => {
+    const k = base.items.findIndex((i, j) => !used.has(j) && ((i.id && i.id === f.id) || normN(i.n) === normN(fNombre(f)))); if (k >= 0) used.add(k);
+    const a = r && (r.ap || []).find(x => x.id === f.id);
+    return fundCard(f, k >= 0 ? base.items[k].v : '', a ? a.v : '', a ? a.d : def, !a, modo);
+  }).join('');
+  const otros = base.items.filter((_, j) => !used.has(j)), sumAp = r ? (r.ap || []).filter(a => funds.some(f => f.id === a.id)).reduce((t, a) => t + a.v, 0) : 0, otras = r ? Math.round((r.aportado - sumAp) * 100) / 100 : 0;
+  return '<div class="fld"><span class="lb">Por fondo</span><span class="help" style="margin:0 0 6px">Lo que aportaste a cada uno este mes (entra solo en «Tus fondos», con el precio de su día) y cuánto vale dentro de la cartera. Los dos son opcionales.</span>' + modoRadios + '</div>' +
+    '<div id="fundRows" style="display:flex;flex-direction:column;gap:10px">' + cards + '</div>' +
+    '<div class="fld"><span class="lb">Otros activos, sin fondo en la lista (opcional)</span><div id="repRows" style="display:flex;flex-direction:column;gap:8px">' + otros.map(i => repRow(i.n, i.v, modo)).join('') + '</div>' +
+    DLREP +
+    '<button type="button" class="btn sm ghost" data-act="addRep" style="align-self:flex-start">' + icon('plus') + 'Añadir otro activo</button></div>' +
+    '<div class="fld"><label for="cOtras">Otras aportaciones sin fondo (€, opcional)</label><input id="cOtras" name="otras" inputmode="decimal" autocomplete="off" placeholder="0" value="' + (Math.abs(otras) > 0.004 ? fmtIn(otras) : '') + '"></div>';
+}
+function updApTot() {
+  const box = $('#apTot'); if (!box) return;
+  const fa = [...document.querySelectorAll('#sheetBody input[name^="fa_"]')], one = $('#cAp'), ot = $('#cOtras');
+  const t = (one ? [one] : fa.concat(ot ? [ot] : [])).reduce((a, i) => a + (num(i.value) || 0), 0);
+  box.innerHTML = 'Total aportado este mes: <b class="num">' + eur(t) + '</b>';
+}
 function sheetMes(mes, cid) {
   const multi = D.carteras.length > 1, r = mes ? D.cartera.find(x => x.mes === mes && x.c === (cid || D.carteras[0].id)) : null;
   const c0 = r ? r.c : (D.carteras.some(c => c.id === ui.cart) ? ui.cart : D.carteras[0].id);
   const v = r || { mes: mk(todayISO()), aportado: '', valor: '' };
-  // Reparto: al editar, el de ese mes; en un mes nuevo, los mismos fondos del último mes que lo tenga (con sus % si estaba en %).
-  const prev = carteraRows(c0).filter(x => x.rep && x.mes !== (r ? r.mes : '')).pop();
-  const vacio = { modo: 'pct', items: [{ n: '', v: '' }, { n: '', v: '' }] };
-  const base = r ? (r.rep || vacio) : prev ? { modo: prev.rep.modo, items: prev.rep.items.map(i => ({ n: i.n, v: prev.rep.modo === 'pct' ? i.v : '' })) } : vacio;
-  const names = [...new Set(D.cartera.flatMap(x => (x.rep && x.rep.items || []).map(i => i.n)).concat(D.seg.filter(p => p.tipo === 'fondo').map(p => p.nombre)))];
   openSheet(r ? 'Editar mes' : 'Apuntar un mes',
     '<div class="form"><p class="sub" style="margin:0">Una vez al mes: lo que aportaste y el valor que marca tu plataforma.</p>' +
     (multi ? (r ? '<input type="hidden" name="cart" value="' + esc(c0) + '"><p style="margin:0;font-weight:700">Cartera: ' + esc(D.carteras.find(c => c.id === c0).nombre) + '</p>' : '<div class="fld"><span class="lb">Cartera</span><div class="opts" role="radiogroup" aria-label="Cartera">' + D.carteras.map(c => opt('cart', c.id, c.id === c0, esc(c.nombre))).join('') + '</div></div>') : '<input type="hidden" name="cart" value="' + esc(c0) + '">') +
-    '<div class="fld"><label for="cMes">Mes</label><input id="cMes" name="mes" type="month" placeholder="2026-10" value="' + v.mes + '"' + (r ? ' readonly' : '') + '></div>' +
-    '<div class="row2"><div class="fld"><label for="cAp">Aportado ese mes (€)</label><input id="cAp" name="ap" inputmode="decimal" autocomplete="off" placeholder="0" value="' + (r ? fmtIn(v.aportado) : '') + '"></div><div class="fld"><label for="cVal">Valor de la cartera (€)</label><input id="cVal" name="val" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (r ? fmtIn(v.valor) : '') + '"></div></div>' +
-    '<div class="fld"><span class="lb">¿En qué está invertido? (opcional)</span><div class="opts" role="radiogroup" aria-label="Cómo apuntar el reparto">' + opt('repModo', 'pct', base.modo !== 'eur', 'En %') + opt('repModo', 'eur', base.modo === 'eur', 'En €') + '</div>' +
-    '<div id="repRows" style="display:flex;flex-direction:column;gap:8px;margin-top:4px">' + base.items.map(i => repRow(i.n, i.v, base.modo)).join('') + '</div>' +
-    '<datalist id="dlRep">' + names.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>' +
-    '<button type="button" class="btn sm ghost" data-act="addRep" style="align-self:flex-start">' + icon('plus') + 'Añadir fondo o activo</button>' +
-    '<span class="help">Apunta cada uno con su porcentaje o su importe, como te sea más cómodo. Lo que no apuntes aparece como «Sin asignar». Al cambiar de % a €, los números se convierten solos con el valor de la cartera.</span></div>' +
+    '<div class="row2"><div class="fld"><label for="cMes">Mes</label><input id="cMes" name="mes" type="month" placeholder="2026-10" value="' + v.mes + '"' + (r ? ' readonly' : '') + '></div><div class="fld"><label for="cVal">Valor de la cartera (€)</label><input id="cVal" name="val" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + (r ? fmtIn(v.valor) : '') + '"></div></div>' +
+    '<div id="monthBlock" style="display:flex;flex-direction:column;gap:14px">' + monthBlock(c0, v.mes, r, monthBase(c0, r)) + '</div><p class="sub" id="apTot" style="margin:0"></p>' +
     actions(r ? delBtn('mes', c0 + '|' + mes) : '', 'Guardar mes') + '</div>',
     fd => {
-      const m = String(fd.get('mes') || ''), ap = num(fd.get('ap')), val = num(fd.get('val')), cc = String(fd.get('cart') || '');
+      const m = String(fd.get('mes') || ''), val = num(fd.get('val')), cc = String(fd.get('cart') || '');
       if (!D.carteras.some(c => c.id === cc)) return 'Elige una cartera.';
       if (!isMonth(m)) return 'Pon un mes válido (por ejemplo 2026-10).';
-      if (ap == null || ap < 0) return 'Pon lo aportado (puede ser 0).';
       if (val == null || val < 0) return 'Pon el valor de la cartera.';
-      const modo = fd.get('repModo') === 'eur' ? 'eur' : 'pct', rn = fd.getAll('rn'), rv = fd.getAll('rv'), items = [], seen = new Set();
+      const funds = D.fondos.filter(f => f.c === cc), apList = []; let ap = 0;
+      if (funds.length) {
+        for (const f of funds) {
+          const raw = String(fd.get('fa_' + f.id) || '').trim(); if (!raw) continue;
+          const x = num(raw); if (x == null) return 'Revisa lo aportado a «' + fNombre(f) + '».';
+          if (x === 0) continue;
+          const dd = String(fd.get('fd_' + f.id) || '');
+          if (!isDate(dd)) return 'Pon el día de la aportación a «' + fNombre(f) + '».';
+          if (dd.slice(0, 7) !== m) return 'El día de la aportación a «' + fNombre(f) + '» tiene que ser de ese mes.';
+          apList.push({ id: f.id, v: x, d: dd }); ap += x;
+        }
+        const ot = String(fd.get('otras') || '').trim(), o = ot ? num(ot) : 0;
+        if (o == null) return 'Revisa «Otras aportaciones sin fondo».';
+        ap += o;
+      } else { const x = num(fd.get('ap')); if (x == null) return 'Pon lo aportado (puede ser 0).'; ap = x; }
+      if (ap < 0) return 'Lo aportado no puede salir negativo.';
+      const modo = fd.get('repModo') === 'eur' ? 'eur' : 'pct', rn = fd.getAll('rn'), rv = fd.getAll('rv'), ri = fd.getAll('ri'), items = [], seen = new Set();
       for (let k = 0; k < rn.length; k++) {
         const nombre = String(rn[k] || '').trim().slice(0, 40), raw = String(rv[k] || '').trim();
         if (!raw) continue; // fila sin cantidad: se ignora
@@ -903,15 +976,16 @@ function sheetMes(mes, cid) {
         const x = num(raw);
         if (x == null || !(x > 0)) return 'Pon un ' + (modo === 'eur' ? 'importe' : 'porcentaje') + ' mayor que 0 para «' + nombre + '».';
         if (seen.has(nombre.toLowerCase())) return '«' + nombre + '» está repetido.';
-        seen.add(nombre.toLowerCase()); items.push({ n: nombre, v: x });
+        seen.add(nombre.toLowerCase()); const it = { n: nombre, v: x }; if (ri[k]) it.id = ri[k]; items.push(it);
       }
       const suma = items.reduce((a, b) => a + b.v, 0);
       if (modo === 'pct' && suma > 100.05) return 'Los porcentajes suman ' + suma.toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' %: no pueden pasar de 100 %.';
       if (modo === 'eur' && suma > val + 0.01) return 'Los importes suman ' + eur(suma) + ', más que el valor de la cartera (' + eur(val) + ').';
-      const row = { c: cc, mes: m, aportado: ap, valor: val }; if (items.length) row.rep = { modo, items };
+      const row = { c: cc, mes: m, aportado: ap, valor: val }; if (apList.length) row.ap = apList; if (items.length) row.rep = { modo, items };
       D.cartera = D.cartera.filter(x => !(x.mes === m && x.c === cc)); D.cartera.push(row); ui.cart = multi ? (ui.cart === 'total' ? 'total' : cc) : cc;
       save(); render(); toast('Mes guardado');
     });
+  updApTot();
 }
 
 function sheetSeg(id) {
@@ -938,38 +1012,41 @@ function sheetSeg(id) {
 }
 
 const movRow = (f, m, v) => '<div class="fld"><div class="movrow"><input name="mf" type="date" aria-label="Fecha" value="' + esc(f) + '"><select name="mt" aria-label="Qué apuntas"><option value="part"' + (m === 'part' ? ' selected' : '') + '>Participaciones</option><option value="eur"' + (m === 'eur' ? ' selected' : '') + '>Importe (€)</option></select><div class="movq"><input name="mv" inputmode="decimal" autocomplete="off" placeholder="Cantidad" aria-label="Cantidad" value="' + fmtIn(v) + '"><button type="button" class="btn ghost" data-act="delMov" aria-label="Quitar">' + icon('x') + '</button></div></div></div>';
-function sheetFondo(id) {
+function sheetFondo(id, pre) {
   const fo = id ? D.fondos.find(x => x.id === id) : null, isins = Object.keys(PR).filter(isIsin);
-  if (!fo && !isins.length) { toast('Aún no tengo los precios. Abre la app con internet y prueba de nuevo.'); return; }
-  const multi = D.carteras.length > 1, c0 = fo ? fo.c : (D.carteras.some(c => c.id === ui.cart) ? ui.cart : D.carteras[0].id);
-  const v = fo || { isin: isins.find(i => !D.fondos.some(x => x.isin === i && x.c === c0)) || isins[0], c: c0, movs: [{ f: todayISO(), m: 'part', v: '' }] };
+  const multi = D.carteras.length > 1, c0 = fo ? fo.c : (pre && pre.c) || (D.carteras.some(c => c.id === ui.cart) ? ui.cart : D.carteras[0].id);
+  const v = fo || { isin: '', nombre: (pre && pre.nombre) || '', c: c0, movs: [{ f: todayISO(), m: 'part', v: '' }] };
   openSheet(fo ? 'Editar fondo' : 'Añadir fondo',
-    '<div class="form">' +
-    (fo ? '<input type="hidden" name="isin" value="' + esc(fo.isin) + '"><p style="margin:0;font-weight:700">' + esc((PR[fo.isin] || {}).nombre || fo.isin) + '</p>' : '<div class="fld"><span class="lb">Fondo</span><div class="opts" role="radiogroup" aria-label="Fondo">' + isins.map(i => opt('isin', i, i === v.isin, esc(PR[i].nombre))).join('') + '</div></div>') +
+    '<div class="form"><div class="fld"><label for="fNombre">Nombre</label><input id="fNombre" name="nombre" maxlength="60" autocomplete="off" placeholder="iShares Developed World" value="' + esc(v.nombre) + '"></div>' +
+    '<div class="fld"><label for="fIsin">ISIN (opcional)</label><input id="fIsin" name="isin" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="IE000ZYRH0Q7" style="text-transform:uppercase" value="' + esc(v.isin) + '"><span class="help">Con el ISIN, y si ese fondo ya tiene precio diario, sale su gráfica día a día. Si no lo tiene, el fondo se añade igual (cuenta en lo aportado y en el reparto) y puedes pasarle el ISIN a Claude para que le busque precios.</span>' +
+    (isins.length ? '<div class="chips" style="margin-top:6px" role="group" aria-label="Fondos con precio diario">' + isins.map(i => '<button type="button" class="chip" style="text-transform:none" data-act="fillIsin" data-isin="' + esc(i) + '" data-n="' + esc(PR[i].nombre) + '">' + esc(PR[i].nombre) + '</button>').join('') + '</div><span class="help">Ya tienen precio diario: toca uno para rellenar nombre e ISIN.</span>' : '') + '</div>' +
     (multi ? (fo ? '<input type="hidden" name="cart" value="' + esc(c0) + '">' : '<div class="fld"><span class="lb">Cartera</span><div class="opts" role="radiogroup" aria-label="Cartera">' + D.carteras.map(c => opt('cart', c.id, c.id === c0, esc(c.nombre))).join('') + '</div></div>') : '<input type="hidden" name="cart" value="' + esc(c0) + '">') +
-    '<div class="fld"><span class="lb">Tus compras</span><span class="help" style="margin:0 0 6px">Primero, lo que ya tienes: fecha de hoy y las participaciones que ves en tu plataforma. Luego, cada vez que compres, otra fila con su fecha, en participaciones o en importe (la app calcula las participaciones con el precio de ese día). Una venta va en negativo.</span>' +
-    '</div><div id="movRows" style="display:flex;flex-direction:column;gap:8px">' + v.movs.map(m => movRow(m.f, m.m, m.v)).join('') + '</div>' +
-    '<button type="button" class="btn sm ghost" data-act="addMov" style="align-self:flex-start">' + icon('plus') + 'Añadir compra</button>' +
+    '<div class="fld"><span class="lb">Lo que ya tienes y ventas</span><span class="help" style="margin:0 0 6px">Pon una fila con la fecha de hoy y las participaciones que ves en tu plataforma. No repitas aquí lo que aportas cada mes: eso se apunta en «Apuntar mes», fondo por fondo, y entra solo. Una venta va en negativo.</span></div>' +
+    '<div id="movRows" style="display:flex;flex-direction:column;gap:8px">' + v.movs.map(m => movRow(m.f, m.m, m.v)).join('') + '</div>' +
+    '<button type="button" class="btn sm ghost" data-act="addMov" style="align-self:flex-start">' + icon('plus') + 'Añadir fila</button>' +
     actions(fo ? delBtn('fondo', id) : '', fo ? 'Guardar' : 'Añadir fondo') + '</div>',
     fd => {
-      const isin = String(fd.get('isin') || ''), cc = String(fd.get('cart') || '');
-      if (!isIsin(isin) || !PR[isin]) return 'Elige un fondo.';
+      const isin = String(fd.get('isin') || '').trim().toUpperCase(), cc = String(fd.get('cart') || ''); let nombre = String(fd.get('nombre') || '').trim().slice(0, 60);
+      if (isin && !isIsin(isin)) return 'Ese ISIN no tiene buena pinta: son 12 letras y números (por ejemplo IE000ZYRH0Q7). Déjalo vacío si no lo tienes.';
+      if (!nombre && isin && PR[isin]) nombre = PR[isin].nombre.slice(0, 60);
+      if (!nombre) return 'Pon el nombre del fondo.';
       if (!D.carteras.some(c => c.id === cc)) return 'Elige una cartera.';
-      if (!fo && D.fondos.some(x => x.isin === isin && x.c === cc)) return 'Ese fondo ya está en esta cartera: tócalo en la lista para añadirle compras.';
+      const otros = D.fondos.filter(x => x.c === cc && x !== fo);
+      if (isin && otros.some(x => x.isin === isin)) return 'Ese ISIN ya está en esta cartera: tócalo en la lista.';
+      if (otros.some(x => normN(fNombre(x)) === normN(nombre))) return 'Ya tienes un fondo con ese nombre en esta cartera.';
       const fs = fd.getAll('mf'), ts = fd.getAll('mt'), vs = fd.getAll('mv'), movs = [];
       for (let k = 0; k < fs.length; k++) {
         const raw = String(vs[k] || '').trim(); if (!raw) continue; // fila sin cantidad: se ignora
         const x = num(raw);
-        if (!isDate(fs[k])) return 'Pon la fecha de cada compra.';
-        if (x == null || x === 0) return 'Pon una cantidad (distinta de 0) en cada compra.';
+        if (!isDate(fs[k])) return 'Pon la fecha de cada fila.';
+        if (x == null || x === 0) return 'Pon una cantidad (distinta de 0) en cada fila.';
         movs.push({ f: fs[k], m: ts[k] === 'eur' ? 'eur' : 'part', v: x });
       }
-      if (!movs.length) return 'Apunta al menos una compra.';
-      const us = fondoUnits({ isin, movs }); let acc = 0;
+      const id2 = fo ? fo.id : 'f_' + uid(), us = fondoUnits({ id: id2, c: cc, isin, movs }); let acc = 0;
       for (const u of us) { acc += u.u; if (acc < -1e-9) return 'Con esas ventas te quedarías con participaciones negativas el ' + dLabel(u.f) + '.'; }
-      const o = { id: fo ? fo.id : 'f_' + uid(), isin, c: cc, movs };
+      const o = { id: id2, isin, nombre, c: cc, movs };
       if (fo) D.fondos[D.fondos.indexOf(fo)] = o; else D.fondos.push(o);
-      save(); render(); toast(fo ? 'Fondo actualizado' : 'Fondo añadido');
+      save(); render(); toast(fo ? 'Fondo actualizado' : isin && !PR[isin] ? 'Fondo añadido. Sin precio diario todavía: pásale el ISIN a Claude' : 'Fondo añadido');
     });
 }
 
@@ -1083,7 +1160,7 @@ function sheetImport(data) {
         ensureSecs(D.secciones, D.seg);
         c.objetivos.forEach(x => { if (!has(D.objetivos, x.id)) D.objetivos.push(x); });
         c.carteras.forEach(x => { if (!D.carteras.some(y => y.id === x.id)) D.carteras.push(x); });
-        c.fondos.forEach(x => { if (!D.fondos.some(y => y.id === x.id || (y.isin === x.isin && y.c === x.c))) D.fondos.push(x); });
+        c.fondos.forEach(x => { if (!D.fondos.some(y => y.id === x.id || (y.c === x.c && (x.isin ? y.isin === x.isin : normN(fNombre(y)) === normN(fNombre(x)))))) D.fondos.push(x); });
         c.cartera.forEach(x => { D.cartera = D.cartera.filter(y => !(y.mes === x.mes && y.c === x.c)); D.cartera.push(x); });
       }
       save(); render(); toast('Datos importados');
@@ -1104,7 +1181,7 @@ function download(name, text, type) {
 function doDelete(kind, id) {
   if (kind === 'gasto') D.gastos = D.gastos.filter(x => x.id !== id);
   else if (kind === 'mes') { const [cc, mm] = String(id).split('|'); D.cartera = D.cartera.filter(x => !(x.mes === mm && x.c === cc)); }
-  else if (kind === 'fondo') D.fondos = D.fondos.filter(x => x.id !== id);
+  else if (kind === 'fondo') { D.fondos = D.fondos.filter(x => x.id !== id); D.cartera.forEach(r => { if (r.ap) { r.ap = r.ap.filter(a => a.id !== id); if (!r.ap.length) delete r.ap; } }); }
   else if (kind === 'cart') { if (D.carteras.length <= 1) return; D.fondos = D.fondos.filter(x => x.c !== id); D.cartera = D.cartera.filter(x => x.c !== id); D.carteras = D.carteras.filter(x => x.id !== id); ui.cart = 'total'; }
   else if (kind === 'seg') D.seg = D.seg.filter(x => x.id !== id);
   else if (kind === 'obj') D.objetivos = D.objetivos.filter(x => x.id !== id);
@@ -1119,7 +1196,8 @@ const ACT = {
   editObj(el) { sheetObj(el.dataset.id); }, aportar(el) { sheetAportar(el.dataset.id); }, precios() { sheetPrecios(); },
   goSettings() { location.hash = '#/ajustes'; }, closeSheet() { closeSheet(); }, wipe() { sheetWipe(); },
   gMes(el) { ui.gMes = el.dataset.m; render(); },
-  addFondo() { sheetFondo(); }, editFondo(el) { sheetFondo(el.dataset.id); },
+  addFondo() { sheetFondo(); }, editFondo(el) { sheetFondo(el.dataset.id); }, sugFondo(el) { sheetFondo(null, { nombre: el.dataset.n }); },
+  fillIsin(el) { const i = $('#fIsin'), n = $('#fNombre'); if (i) i.value = el.dataset.isin; if (n && !n.value.trim()) n.value = el.dataset.n; },
   addMov() { const b = $('#movRows'); b.insertAdjacentHTML('beforeend', movRow(todayISO(), 'part', '')); const i = b.lastElementChild.querySelector('input[name="mv"]'); if (i) i.focus(); },
   delMov(el) { const row = el.closest('.fld'); if (row) row.remove(); },
   cCart(el) { ui.cart = el.dataset.c; render(); window.scrollTo(0, 0); },
@@ -1164,6 +1242,8 @@ document.addEventListener('change', e => {
   else if (t.id === 'cmpB') { ui.cmpB = t.value || null; ui._cmpTouched = true; render(); }
   else if (t.id === 'rDesde' || t.id === 'rHasta') rango();
   else if (t.name === 'repModo') convertRep(t.value);
+  else if (t.name === 'cart' && t.closest('#sheetBody') && $('#monthBlock')) { const mes = ($('#cMes') || {}).value || mk(todayISO()); $('#monthBlock').innerHTML = monthBlock(t.value, mes, null, monthBase(t.value, null)); updApTot(); }
+  else if (t.id === 'cMes' && $('#monthBlock')) document.querySelectorAll('#sheetBody input[data-auto="1"]').forEach(i => { i.value = dayDefault(t.value); });
   else if (t.id === 'fileIn' && t.files && t.files[0]) {
     const f = t.files[0];
     if (f.size > 5e6) { toast('El archivo es demasiado grande'); return; }
@@ -1175,10 +1255,11 @@ document.addEventListener('change', e => {
 document.addEventListener('input', e => {
   if (e.target.id === 'q') { ui.q = e.target.value; $('#gList').innerHTML = gListHTML(); }
   else if (e.target.closest && e.target.closest('#escForm')) { readEsc(); renderEsc(); }
+  else if (e.target.closest && e.target.closest('#sheetBody') && $('#apTot')) { if (/^fd_/.test(e.target.name || '')) e.target.dataset.auto = '0'; updApTot(); }
 });
 // Al cambiar el reparto de % a € (o al revés), convierte lo ya escrito usando el valor de la cartera.
 function convertRep(modo) {
-  const total = num(($('#cVal') || {}).value), inputs = [...document.querySelectorAll('#repRows input[name="rv"]')];
+  const total = num(($('#cVal') || {}).value), inputs = [...document.querySelectorAll('#sheetBody input[name="rv"]')];
   let sinConvertir = false;
   inputs.forEach(inp => {
     inp.placeholder = modo === 'eur' ? '€' : '%'; inp.setAttribute('aria-label', modo === 'eur' ? 'Importe en euros' : 'Porcentaje');
