@@ -9,7 +9,7 @@ Todos los textos de la app y los comentarios del código están en español.
 
 - **No hagas commit ni push sin confirmación explícita del usuario antes de cada uno.** Prepara los cambios, explícalos y espera el "sí".
 - Lo que llega a `main` se publica al instante en GitHub Pages: es la app de verdad.
-- Una tarea de GitHub (`.github/workflows/precios.yml`) hace commits solos en `main` ("Precios de fondos") dos veces al día. Antes de subir algo, haz `git pull --rebase`.
+- Una tarea de GitHub (`.github/workflows/precios.yml`) hace commits solos en `main` ("Precios de fondos y acciones") dos veces al día. Antes de subir algo, haz `git pull --rebase`.
 
 ## Publicar una versión nueva
 
@@ -28,11 +28,13 @@ Mensaje de commit habitual: `vX.Y.Z: qué cambia, en lenguaje sencillo`.
 - `sw.js` – service worker: guarda la app para abrirla sin internet; `data/precios.json` va primero por red.
 - `manifest.webmanifest`, `icons/` – instalación como app. (Los PNG/SVG sueltos en la raíz son copias que no se usan.)
 - `data/precios.json` – precios diarios de los fondos; lo escribe `tools/precios.py` desde la tarea de GitHub. No editar a mano.
+- `data/acciones.json` – precios diarios de las acciones de Seguimiento (Yahoo Finance, en euros o dólares; otras monedas pasadas a euros); lo escribe `tools/acciones.py`. La lista de acciones está en `tools/acciones.txt` (`TICKER` o `TICKER = ticker de Yahoo`), que es pública.
 
 ## Datos en localStorage
 
 - `centex.v1` – datos del usuario (gastos, cartera, carteras, fondos, seguimiento, secciones, objetivos, ajustes). Pasa por `norm()` al cargar: cualquier campo nuevo debe tener valor por defecto en `blank()`/`norm()` para no romper datos ya guardados ni copias de seguridad antiguas.
 - `centex.precios` – copia local de `data/precios.json`.
+- `centex.acciones` – copia local de `data/acciones.json`.
 - `centex.logos` – caché de logos de empresas.
 - `centex.esc` – últimos valores de la pantalla Escenarios.
 

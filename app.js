@@ -294,6 +294,37 @@ async function loadPrecios() {
   } catch (e) { /* sin conexión: se usan los precios guardados */ }
 }
 
+/* ---------- 3d. precios diarios de las acciones de Seguimiento ----------
+   La misma tarea de GitHub guarda en data/acciones.json el cierre de cada día de las acciones de tools/acciones.txt.
+   Cada una va en su moneda (euros o dólares); las que cotizan en otra llegan ya pasadas a euros. */
+const AKEY = 'centex.acciones';
+let AC = {};
+try { AC = JSON.parse(localStorage.getItem(AKEY) || '{}') || {}; } catch (e) { AC = {}; }
+const isTk = s => /^[A-Z0-9.\-^=]{1,20}$/.test(String(s || ''));
+// Último precio automático de una posición: por su ticker en las acciones o, si es un ISIN, en los fondos. La bolsa delante («NASDAQ:TSLA») no cuenta.
+function autoPrecio(p) {
+  const k = String(p.ticker || '').trim().toUpperCase().replace(/^[A-Z]+:/, ''), src = AC[k] || (isIsin(k) && PR[k]);
+  const ds = src ? Object.keys(src.precios || {}).sort() : [];
+  return ds.length ? { p: src.precios[ds[ds.length - 1]], f: ds[ds.length - 1], moneda: src.moneda } : null;
+}
+async function loadAcciones() {
+  try {
+    const r = await fetch('data/acciones.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (!j || typeof j !== 'object') return;
+    const clean = {};
+    for (const k of Object.keys(j)) {
+      if (!isTk(k) || !j[k] || typeof j[k].precios !== 'object') continue;
+      const ps = {}; for (const d of Object.keys(j[k].precios)) { const p = j[k].precios[d]; if (isDate(d) && typeof p === 'number' && isFinite(p) && p > 0) ps[d] = p; }
+      clean[k] = { nombre: String(j[k].nombre || k).slice(0, 90), moneda: j[k].moneda === 'USD' ? 'USD' : 'EUR', precios: ps };
+    }
+    if (JSON.stringify(clean) === JSON.stringify(AC)) return;
+    AC = clean; try { localStorage.setItem(AKEY, JSON.stringify(AC)); } catch (e) { /* nada */ }
+    if ((route() === 'seguimiento' || route() === 'inicio') && !document.querySelector('#sheet[open]')) render();
+  } catch (e) { /* sin conexión: se usan los precios guardados */ }
+}
+
 /* ---------- 3. cálculos ---------- */
 function monthRange() {
   const now = mk(todayISO()), ks = D.gastos.map(g => mk(g.fecha));
@@ -343,7 +374,11 @@ function repartoDe(r) {
 // Escenarios: interés compuesto mes a mes. La rentabilidad anual se reparte en 12 meses y la aportación entra a final de cada mes.
 const rmOf = r => Math.pow(1 + r / 100, 1 / 12) - 1;
 const fvOf = (p, a, rm, n) => (rm === 0 ? p + a * n : p * Math.pow(1 + rm, n) + (a * (Math.pow(1 + rm, n) - 1)) / rm);
-const rentPos = p => { const e = p.precioEntrada, a = p.precioActual; return e > 0 && a > 0 ? ((a - e) / e) * 100 : null; };
+// Precio de hoy de una posición: el automático si lo hay; si no, el apuntado a mano. Entrada y precio de hoy van en la misma moneda.
+const precioHoy = p => { const a = autoPrecio(p); return a ? a.p : p.precioActual; };
+const monedaPos = p => { const a = autoPrecio(p); return a ? a.moneda : 'EUR'; };
+const money = (n, m) => (m === 'USD' ? n.toLocaleString('es-ES', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: 'always' }) : eur(n));
+const rentPos = p => { const e = p.precioEntrada, a = precioHoy(p); return e > 0 && a > 0 ? ((a - e) / e) * 100 : null; };
 const monthsLeft = f => { const t = todayISO(), a = t.split('-').map(Number), b = f.split('-').map(Number); return (b[0] - a[0]) * 12 + (b[1] - a[1]); };
 
 /* ---------- 4. gráficos (SVG dibujado a mano) ---------- */
@@ -656,11 +691,11 @@ function vSeg() {
   const groups = [...new Set(items.map(p => p.grupo))];
   const rs = items.map(rentPos).filter(r => r != null), avg = rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : null;
   const chips = '<div class="chips" role="group" aria-label="Sección">' + D.secciones.map(x => '<button class="chip" style="text-transform:none" data-act="segTipo" data-t="' + esc(x.id) + '" aria-pressed="' + (tipo === x.id) + '">' + esc(x.nombre) + '</button>').join('') + '<button class="chip" style="text-transform:none" data-act="addSec" aria-label="Nueva sección">+ Nueva</button></div>';
-  const head = '<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;flex-wrap:wrap">' + (items.length ? '<button class="btn sm ghost" data-act="precios">Actualizar precios</button>' : '') + '<button class="btn sm ghost" data-act="editSecs">Secciones</button></div>';
+  const head = '<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;flex-wrap:wrap">' + (items.some(p => !autoPrecio(p)) ? '<button class="btn sm ghost" data-act="precios">Actualizar precios</button>' : '') + '<button class="btn sm ghost" data-act="editSecs">Secciones</button></div>';
   const sum = items.length ? '<p style="font-size:14px;color:var(--ink2);font-weight:600;padding:0 2px">' + items.length + ' en seguimiento' + (avg != null ? ' · rentabilidad media <span class="' + (avg >= 0 ? 'dn-t' : 'up-t') + '">' + (avg >= 0 ? '▲ ' : '▼ ') + pct(avg) + '</span>' : ' · sin precios actuales todavía') + '</p>' : '';
   const body = items.length ? '<div class="card">' + groups.map(g => '<div class="grp">' + esc(g) + '</div><div class="list">' + items.filter(p => p.grupo === g).map(p => {
-    const r = rentPos(p);
-    return '<button class="item plain" data-act="editSeg" data-id="' + esc(p.id) + '">' + posLogo(p) + '<span class="t"><b>' + esc(p.nombre) + '</b><small>' + esc(p.ticker || '') + (p.precioEntrada != null ? ' · entrada ' + eur(p.precioEntrada) : '') + '</small></span><span class="r">' + (p.precioActual != null ? eur(p.precioActual) : '<small>sin precio</small>') + (r != null ? '<small class="' + (r >= 0 ? 'dn-t' : 'up-t') + '">' + (r >= 0 ? '▲ ' : '▼ ') + pct(r) + '</small>' : '') + '</span></button>';
+    const r = rentPos(p), a = autoPrecio(p), m = monedaPos(p), hoy = precioHoy(p);
+    return '<button class="item plain" data-act="editSeg" data-id="' + esc(p.id) + '">' + posLogo(p) + '<span class="t"><b>' + esc(p.nombre) + '</b><small>' + esc(p.ticker || '') + (p.precioEntrada != null ? ' · entrada ' + money(p.precioEntrada, m) : '') + (a ? ' · precio del ' + esc(dLabel(a.f)) : '') + '</small></span><span class="r">' + (hoy != null ? money(hoy, m) : '<small>sin precio</small>') + (r != null ? '<small class="' + (r >= 0 ? 'dn-t' : 'up-t') + '">' + (r >= 0 ? '▲ ' : '▼ ') + pct(r) + '</small>' : '') + '</span></button>';
   }).join('') + '</div>').join('') + '</div>' : empty('Aún no hay nada en «' + esc(secName(tipo)) + '». Toca + para añadir la primera posición.');
   return { html: '<div class="page">' + vh('Seguimiento', 'Paper trading: sin dinero real', 'seguimiento') + chips + head + sum + body + (items.length && D.ajustes.logos ? '<p class="credit">' + CREDIT + '</p>' : '') + '</div>' };
 }
@@ -845,7 +880,7 @@ function vAjustes() {
     '<div class="setrow"><div><b>Borrar todo</b><p>Elimina todos los datos de este dispositivo.</p></div><button class="btn sm danger" data-act="wipe">Borrar…</button></div></div>' +
     '<div class="card"><h2>Tenerla como una app</h2>' + (standalone ? '<p class="sub" style="margin-bottom:0">Ya estás usando Centex como app.</p>' :
       '<p class="sub">Añádela a tu pantalla de inicio y se abrirá a pantalla completa.</p><ol class="steps"><li><b>iPhone (Safari):</b> botón compartir → «Añadir a pantalla de inicio».</li><li><b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación» o «Añadir a pantalla de inicio».</li></ol>') + '</div>' +
-    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.10.2 · 22 oct 2026</p></div>' };
+    '<p style="text-align:center;color:var(--muted);font-size:12.5px;font-weight:600;padding:6px">Centex · versión 1.11 · 22 oct 2026</p></div>' };
 }
 
 const VIEWS = { inicio: vInicio, gastos: vGastos, cartera: vCartera, seguimiento: vSeg, objetivos: vObj, ajustes: vAjustes };
@@ -992,12 +1027,15 @@ function sheetMes(mes, cid) {
 function sheetSeg(id) {
   const p = id ? D.seg.find(x => x.id === id) : null;
   const v = p || { tipo: ui.segTipo, grupo: '', nombre: '', ticker: '', fecha: '', precioEntrada: '', precioActual: '', motivo: '', web: '' };
-  const groups = [...new Set(D.seg.map(x => x.grupo))];
+  const groups = [...new Set(D.seg.map(x => x.grupo))], a = p ? autoPrecio(p) : null, cur = a && a.moneda === 'USD' ? 'US$' : '€';
+  const actFld = a ? '<div class="fld"><span class="lb">Precio actual</span><input type="hidden" name="pact" value="' + fmtIn(v.precioActual) + '"><b style="font-size:17px;padding:10px 0">' + money(a.p, a.moneda) + '</b><span class="help">Automático, del ' + esc(dLabel(a.f)) + '</span></div>'
+    : '<div class="fld"><label for="sAct">Precio actual (€)</label><input id="sAct" name="pact" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioActual) + '"></div>';
   openSheet(p ? 'Editar posición' : 'Añadir al seguimiento',
     '<div class="form"><div class="fld"><span class="lb">Sección</span><div class="opts" role="radiogroup" aria-label="Sección">' + D.secciones.map(x => opt('tipo', x.id, v.tipo === x.id, esc(x.nombre))).join('') + '</div></div>' +
     '<div class="fld"><label for="sNombre">Nombre</label><input id="sNombre" name="nombre" maxlength="80" autocomplete="off" value="' + esc(v.nombre) + '"></div>' +
     '<div class="row2"><div class="fld"><label for="sGrupo">Sector o tipo</label><input id="sGrupo" name="grupo" list="dlGrupos" maxlength="60" autocomplete="off" placeholder="Tecnología, Value…" value="' + esc(v.grupo) + '"><datalist id="dlGrupos">' + groups.map(g => '<option value="' + esc(g) + '">').join('') + '</datalist></div><div class="fld"><label for="sTicker">Ticker o ISIN</label><input id="sTicker" name="ticker" maxlength="30" autocomplete="off" value="' + esc(v.ticker) + '"></div></div>' +
-    '<div class="row2"><div class="fld"><label for="sEnt">Precio de entrada (€)</label><input id="sEnt" name="pent" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioEntrada) + '"></div><div class="fld"><label for="sAct">Precio actual (€)</label><input id="sAct" name="pact" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioActual) + '"></div></div>' +
+    '<div class="row2"><div class="fld"><label for="sEnt">Precio de entrada (' + cur + ')</label><input id="sEnt" name="pent" inputmode="decimal" autocomplete="off" value="' + fmtIn(v.precioEntrada) + '"></div>' + actFld + '</div>' +
+    '<div class="fld"><span class="help">Si tiene precio automático, pon el de entrada en la moneda en que cotiza: dólares si es de EE. UU.; euros si es europea.</span></div>' +
     '<div class="fld"><label for="sFecha">Fecha de entrada</label><input id="sFecha" name="fecha" type="date" value="' + esc(v.fecha || '') + '"></div>' +
     '<div class="fld"><label for="sWeb">Web de la empresa (opcional)</label><input id="sWeb" name="web" maxlength="80" autocomplete="off" inputmode="url" placeholder="qualcomm.com" value="' + esc(v.web || '') + '"><span class="help">Solo sirve para encontrar su logo. Si sale bien sin ponerla, déjala vacía.</span></div>' +
     '<div class="fld"><label for="sMotivo">Motivo corto</label><input id="sMotivo" name="motivo" maxlength="400" autocomplete="off" value="' + esc(v.motivo) + '"></div>' +
@@ -1099,9 +1137,9 @@ function sheetSecs() {
 }
 
 function sheetPrecios() {
-  const items = D.seg.filter(p => p.tipo === ui.segTipo);
+  const items = D.seg.filter(p => p.tipo === ui.segTipo && !autoPrecio(p));
   openSheet('Actualizar precios',
-    '<div class="form"><p class="sub" style="margin:0">Pon el precio de hoy de cada uno. Déjalo vacío si no lo sabes.</p>' +
+    '<div class="form"><p class="sub" style="margin:0">Pon el precio de hoy de cada uno. Déjalo vacío si no lo sabes. Las que tienen precio automático no salen aquí.</p>' +
     items.map(p => '<div class="pricerow"><div><b>' + esc(p.nombre) + '</b><small>' + (p.precioEntrada != null ? 'Entrada ' + eur(p.precioEntrada) : 'Sin precio de entrada') + '</small></div><input name="p_' + esc(p.id) + '" inputmode="decimal" autocomplete="off" aria-label="Precio actual de ' + esc(p.nombre) + '" placeholder="€" value="' + fmtIn(p.precioActual) + '"></div>').join('') +
     actions('', 'Guardar precios') + '</div>',
     fd => {
@@ -1318,5 +1356,6 @@ $('#fabIc').innerHTML = icon('plus');
 applyTheme();
 render();
 loadPrecios();
+loadAcciones();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) navigator.serviceWorker.register('sw.js').catch(() => {});

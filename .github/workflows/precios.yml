@@ -1,4 +1,4 @@
-name: Precios diarios de fondos
+name: Precios diarios de fondos y acciones
 on:
   workflow_dispatch:
   schedule:
@@ -8,6 +8,8 @@ on:
     paths:
       - '.github/workflows/precios.yml'
       - 'tools/precios.py'
+      - 'tools/acciones.py'
+      - 'tools/acciones.txt'
 permissions:
   contents: write
 jobs:
@@ -21,12 +23,15 @@ jobs:
       - id: run
         run: python tools/precios.py
         continue-on-error: true
+      - id: acc
+        run: python tools/acciones.py
+        continue-on-error: true
       - name: Guardar precios nuevos en el repositorio
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/precios.json
-          git diff --cached --quiet || (git commit -m "Precios de fondos" && git pull --rebase -q && git push)
+          git add data/precios.json data/acciones.json
+          git diff --cached --quiet || (git commit -m "Precios de fondos y acciones" && git pull --rebase -q && git push)
       - name: Avisar si alguna fuente ha fallado
-        if: steps.run.outcome == 'failure'
+        if: steps.run.outcome == 'failure' || steps.acc.outcome == 'failure'
         run: echo "Alguna fuente de precios ha fallado" && exit 1

@@ -1,0 +1,23 @@
+# Acciones de Seguimiento con precio automático: una por línea.
+# Escribe el ticker tal como lo tienes en Centex. Si en Yahoo Finance se llama distinto, añade "= ticker de Yahoo".
+# Ejemplos:
+#   AAPL
+#   ITX = ITX.MC      (Inditex, bolsa de Madrid)
+# Este archivo es público, como todo el repositorio: se ve qué acciones sigues, nunca tus importes.
+# Si en Centex lo tienes con la bolsa delante (NASDAQ:TSLA), aquí va sin ella.
+
+TSLA
+QCOM
+ORCL
+VRT
+NXT = NXT.MC
+HCA
+BE
+ECL
+AMZN
+
+# Fondos de Seguimiento: el ISIN que tienes en Centex = su código en Yahoo Finance
+ES0165243017 = 0P0001NMUE.F   # MyInvestor Value B
+ES0112611001 = 0P00016YQ5.F   # Azvalor Internacional
+ES0159259011 = 0P0001572X.F   # Magallanes European Equity M
+FR0000989626 = 0P00000LRT.F   # Groupama Trésorerie IC

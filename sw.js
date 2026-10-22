@@ -1,6 +1,6 @@
 /* Service worker de Centex: guarda los archivos de la app para que abra rápido y también sin internet.
    Si cambias algo de la app, sube el número de VERSION para que los móviles se actualicen. */
-const VERSION = 'centex-v1.10.2';
+const VERSION = 'centex-v1.11';
 const SHELL = [
   './', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'
@@ -27,7 +27,7 @@ self.addEventListener('fetch', e => {
   const fonts = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
   if (!mine && !fonts) return;
   // Los precios diarios cambian: primero la red, y solo si no hay internet lo guardado.
-  if (mine && url.pathname.endsWith('/data/precios.json')) {
+  if (mine && /\/data\/(precios|acciones)\.json$/.test(url.pathname)) {
     e.respondWith(fetch(req).then(res => { if (res && res.ok) { const c = res.clone(); caches.open(VERSION).then(ca => ca.put(req, c)); } return res; }).catch(() => caches.match(req)));
     return;
   }
