@@ -1,10 +1,8 @@
-# Acciones de Seguimiento con precio automático: una por línea.
-# Escribe el ticker tal como lo tienes en Centex. Si en Yahoo Finance se llama distinto, añade "= ticker de Yahoo".
-# Ejemplos:
-#   AAPL
-#   ITX = ITX.MC      (Inditex, bolsa de Madrid)
-# Este archivo es público, como todo el repositorio: se ve qué acciones sigues, nunca tus importes.
-# Si en Centex lo tienes con la bolsa delante (NASDAQ:TSLA), aquí va sin ella.
+# Activos con precio automático (acciones de Seguimiento y fondos de Cartera o Seguimiento): uno por línea.
+# Vale lo mismo que tengas en Centex: el ticker (TSLA), el ticker con la bolsa delante (BME:NXT) o el ISIN.
+# El programa busca solo su código en Yahoo Finance. Si alguno no lo encuentra bien, se fija a mano: "CLAVE = código de Yahoo".
+# Para añadir uno desde el móvil: en su ficha de Centex, «Pedir precio automático».
+# Este archivo es público, como todo el repositorio: se ve qué sigues, nunca tus importes.
 
 TSLA
 QCOM

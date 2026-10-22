@@ -28,7 +28,7 @@ Mensaje de commit habitual: `vX.Y.Z: qué cambia, en lenguaje sencillo`.
 - `sw.js` – service worker: guarda la app para abrirla sin internet; `data/precios.json` va primero por red.
 - `manifest.webmanifest`, `icons/` – instalación como app. (Los PNG/SVG sueltos en la raíz son copias que no se usan.)
 - `data/precios.json` – precios diarios de los fondos; lo escribe `tools/precios.py` desde la tarea de GitHub. No editar a mano.
-- `data/acciones.json` – precios diarios de las acciones de Seguimiento (Yahoo Finance, en euros o dólares; otras monedas pasadas a euros); lo escribe `tools/acciones.py`. La lista de acciones está en `tools/acciones.txt` (`TICKER` o `TICKER = ticker de Yahoo`), que es pública.
+- `data/acciones.json` – precios diarios de las acciones de Seguimiento (Yahoo Finance, en euros o dólares; otras monedas pasadas a euros); lo escribe `tools/acciones.py`. La lista está en `tools/acciones.txt` (ticker, `BOLSA:TICKER`, ISIN o `CLAVE = código de Yahoo`; el código de Yahoo de un ISIN se busca solo y se guarda en `yahoo`), y es pública. La app tiene un botón «Pedir precio automático» que abre esa lista en GitHub para añadir una línea. Los fondos de Cartera usan `data/precios.json` y, si no están ahí, `data/acciones.json` (solo si van en euros).
 
 ## Datos en localStorage
 

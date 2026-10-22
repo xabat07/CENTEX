@@ -3,6 +3,8 @@
 Formato: {"TICKER": {"nombre": "...", "moneda": "USD", "precios": {"AAAA-MM-DD": 12.34, ...}}}
 Cada acción va en su moneda si es euro o dólar; si cotiza en otra (libras, francos suizos…) se pasa a euros con el cambio de ese día.
 Se piden los últimos días a Yahoo Finance y se reescriben (el del día en curso puede ser aún provisional); las fechas antiguas no se tocan.
+En la lista vale el ticker (TSLA), el ticker con la bolsa delante (BME:NXT) o el ISIN: el código de Yahoo se busca solo
+y se guarda en "yahoo" para no tener que buscarlo cada vez. También se puede fijar a mano: "CLAVE = código de Yahoo".
 Si una acción falla, avisa (la tarea sale en rojo) y las demás se guardan igual."""
 import json, re, sys, pathlib, urllib.request, urllib.parse, datetime
 
@@ -10,6 +12,9 @@ LISTA = pathlib.Path('tools/acciones.txt')
 FICHERO = pathlib.Path('data/acciones.json')
 UA = 'Mozilla/5.0 (compatible; centex-personal-tracker; uso personal)'
 TK = re.compile(r'^[A-Z0-9.\-^=]{1,20}$')
+ISIN = re.compile(r'^[A-Z]{2}[A-Z0-9]{9}[0-9]$')
+BOLSAS = {'NASDAQ': '', 'NYSE': '', 'AMEX': '', 'NYSEARCA': '', 'BME': '.MC', 'LON': '.L', 'LSE': '.L', 'ETR': '.DE', 'XETRA': '.DE',
+          'FRA': '.F', 'EPA': '.PA', 'AMS': '.AS', 'EBR': '.BR', 'BIT': '.MI', 'SWX': '.SW', 'HKEX': '.HK', 'TSE': '.T', 'TSX': '.TO'}
 CENTIMOS = {'GBp': 'GBP', 'GBX': 'GBP', 'ZAc': 'ZAR', 'ILA': 'ILS'}   # cotizan en céntimos de esa moneda
 
 def cierres(simbolo):
@@ -32,6 +37,14 @@ def cierres(simbolo):
     if not out: raise ValueError('sin precios recientes')
     return meta.get('currency') or '', meta.get('longName') or meta.get('shortName') or simbolo, out
 
+def buscar(isin):
+    url = 'https://query2.finance.yahoo.com/v1/finance/search?q=' + isin + '&quotesCount=5&newsCount=0'
+    req = urllib.request.Request(url, headers={'User-Agent': UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        q = [x['symbol'] for x in json.load(r).get('quotes', []) if x.get('symbol')]
+    if not q: raise ValueError('Yahoo Finance no encuentra este ISIN')
+    return q[0]
+
 def a_euros(moneda, ps):
     base, f = (CENTIMOS[moneda], 100) if moneda in CENTIMOS else (moneda, 1)
     _, _, cambio = cierres(base + 'EUR=X')
@@ -46,8 +59,12 @@ for linea in LISTA.read_text('utf-8').splitlines() if LISTA.exists() else []:
     linea = linea.split('#')[0].strip().upper()
     if not linea: continue
     clave, _, simbolo = (x.strip() for x in linea.partition('='))
-    simbolo = simbolo or clave
-    if TK.match(clave) and TK.match(simbolo): lista.append((clave, simbolo))
+    if ':' in clave:   # NASDAQ:TSLA, BME:NXT… (la app también quita la bolsa)
+        bolsa, clave = clave.split(':', 1)
+        simbolo = simbolo or clave + BOLSAS.get(bolsa, '')
+    if not simbolo and not ISIN.match(clave): simbolo = clave
+    if TK.match(clave) and (not simbolo or TK.match(simbolo)):
+        if clave not in [c for c, _ in lista]: lista.append((clave, simbolo))
     else: print('Ignoro la línea', repr(linea), file=sys.stderr)
 
 viejo = json.loads(FICHERO.read_text('utf-8')) if FICHERO.exists() else {}
@@ -55,11 +72,12 @@ datos, fallos = {}, []
 for clave, simbolo in lista:
     prev = (viejo.get(clave) or {}).get('precios', {})
     try:
+        simbolo = simbolo or (viejo.get(clave) or {}).get('yahoo') or buscar(clave)
         moneda, nombre, ps = cierres(simbolo)
         if moneda not in ('EUR', 'USD'):
             ps, moneda = a_euros(moneda, ps), 'EUR'
         nuevos = {**prev, **{d: round(p, 4) for d, p in ps.items()}}
-        datos[clave] = {'nombre': nombre, 'moneda': moneda, 'precios': nuevos}
+        datos[clave] = {'nombre': nombre, 'moneda': moneda, 'yahoo': simbolo, 'precios': nuevos}
         print(f'{clave} ({simbolo}): {max(ps)} = {nuevos[max(ps)]} {moneda}')
     except Exception as e:
         if clave in viejo: datos[clave] = viejo[clave]
